@@ -68,5 +68,9 @@ pref('extensions.zotero.texlink.maxCommentLength', 2000);
 // 调试日志。开启后会向 Zotero 调试输出写入更详细的 Worker 往返信息。
 pref('extensions.zotero.texlink.debug', false);
 
+// 0.1.2 崩溃诊断日志：把识别阶段追加到系统临时目录的 texlink-crash.log。
+// 发生崩溃时该文件会保留，便于定位最后一个成功步骤。稳定版本会默认关闭。
+pref('extensions.zotero.texlink.diagnosticLog', true);
+
 // 公式笔记 HTML 模板（见文件顶部说明）。
 pref('extensions.zotero.texlink.noteTemplate', TEXLINK_DEFAULT_NOTE_TEMPLATE);

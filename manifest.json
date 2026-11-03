@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "TexLink",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "离线公式识别与 Zotero 笔记锚定：把 PDF 中的公式截图转成 LaTeX，并连同页码、时间戳写入文献笔记。",
   "author": "TexLink contributors",
   "icons": {

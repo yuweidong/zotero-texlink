@@ -15,7 +15,7 @@ TexLink 不是“又一个公式 OCR”。它把公式截图识别成 LaTeX 之�
 整个识别过程在 Zotero 内部完成：**无 Python 后端、无云 API、无外部网络请求**。
 交付物是单个 `.xpi`；模型、WASM、tokenizer 全部随包携带。
 
-> 当前版本：V0.1.1。目标 Zotero：10.0 – 10.999。已在 Zotero 10.0.7 的源码/API
+> 当前版本：V0.1.2。目标 Zotero：10.0 – 10.999。已在 Zotero 10.0.7 的源码/API
 > 基础上适配，并使用打包的同版本 ONNX 模型在 Python ONNX Runtime 中完成端到端
 > 数值验证。详见文末“验证状态”。
 
@@ -25,18 +25,29 @@ TexLink 不是“又一个公式 OCR”。它把公式截图识别成 LaTeX 之�
 
 1. 打开 Zotero 10。
 2. `工具` → `插件` → 右上角齿轮 → `从文件安装插件…`
-3. 选择 `dist/zotero-texlink-0.1.1.xpi`。
+3. 选择 `dist/zotero-texlink-0.1.2.xpi`。
 4. 重启 Zotero（或禁用再启用 TexLink）。
 
 > **如果安装时出现“可能无法与该版本的 Zotero 兼容”**：
 > 这是 Zotero 对插件安装失败给出的通用提示。0.1.0 的清单缺少 Zotero 10
 > 强制要求的 `applications.zotero.update_url`，因此会被判为无效插件；
-> 这与 `10.0.7` 的版本范围无关。0.1.1 已修复，并在 Zotero 10.0.7 中
+> 这与 `10.0.7` 的版本范围无关。0.1.2 已修复，并在 Zotero 10.0.7 中
 > 验证为 active=true、appDisabled=false。若仍看到旧提示，请确认选中的是
-> `0.1.1`，必要时先在插件管理器中删除旧的失败记录再安装。
+> `0.1.2`，必要时先在插件管理器中删除旧的失败记录再安装。
 
 安装包约 25 MiB，首次加载会在后台编译 WASM、初始化 ONNX Session；
 模型预热在 Web Worker 中完成，不阻塞 Zotero UI。
+
+> **0.1.2 针对“选择右键菜单后 Zotero 崩溃”的诊断性修复**
+> 0.1.2 不再在右键菜单回调栈内打开 `Zotero.ProgressWindow`，而是：
+> 1. 用 `setTimeout(0)` 把识别推迟到菜单完全关闭后；
+> 2. 用 Reader 文档内的轻量浮层显示进度/错误，不再创建原生窗口；
+> 3. 把关键步骤追加到系统临时目录的 `texlink-crash.log`，用于定位如果是
+>    更深层的原生崩溃。
+>
+> 请先安装 0.1.2 再试一次。如果仍然崩溃，请把
+> `$TMPDIR/texlink-crash.log`（或 `/tmp/texlink-crash.log`）发给我；
+> 日志中的最后一条记录会指出崩溃发生在读取图片、推理还是写笔记阶段。
 
 ### 第一次使用
 
@@ -245,7 +256,7 @@ Zotero 10 的 ExtensionData 校验会要求插件清单包含
 此外，AddonManager 的 `checkUpdateSecurity` 要求该 URL 以 `https:` 开头，
 否则 addon 会被标记为 `appDisabled`（即使手动装上也处于禁用状态）。
 
-因此 0.1.1 的清单使用：
+因此 0.1.2 的清单使用：
 
 ```json
 "update_url": "https://zotero-texlink.invalid/updates.json"
@@ -297,14 +308,14 @@ python3 tools/build_xpi.py
 产物：
 
 ```text
-dist/zotero-texlink-0.1.1.xpi          (24.8 MiB)
-dist/zotero-texlink-0.1.1.xpi.sha256
+dist/zotero-texlink-0.1.2.xpi          (24.8 MiB)
+dist/zotero-texlink-0.1.2.xpi.sha256
 ```
 
 当前构建的 SHA256：
 
 ```text
-7ae3fb8f4e5fa8add1a515b2269f6ac865add9f050bd1f5e2730e9fbd9f0a2d4
+d83190f15c8ffa174142c49a20ec2fbcb5a37dc3ebeeb24ff20e07571e633fa9
 ```
 
 打包细节见 [docs/PACKAGING.md](docs/PACKAGING.md)。模型如何从 Hugging Face
@@ -348,18 +359,23 @@ dist/zotero-texlink-0.1.1.xpi.sha256
 - XPI 资源结构、模型 SHA256、外部 URL 检查通过。
 - **在 Zotero 10.0.7（macOS，headless 测试 profile）中，通过
   `AddonManager.getInstallForFile()` 的实际安装路径安装成功**：
-  `0.1.1`、`active=true`、`appDisabled=false`、`userDisabled=false`；
+  `0.1.2`、`active=true`、`appDisabled=false`、`userDisabled=false`；
   bootstrap startup、chrome 包注册、Reader 右键菜单注册、Worker 启动、
   ORT WASM/两个 ONNX Session 加载和模型预热（warmup）全部完成；调试日志
   可见 `model warmup complete`。
+- **打开真实 Zotero Reader，使用 PDF 图像注释的 end-to-end 测试通过**：
+  用户截图 → Canvas 预处理 → Worker INT8 推理 → LaTeX → 写入文献笔记，
+  Reader 内 toast 显示成功；实际运行约 7 秒（含首次加载会话）。
+- 0.1.2 的 `_diag` 已覆盖从 pipeline、图像、预处理、Worker 到写笔记的全部
+  阶段；正常运行时可在临时目录看到步骤记录。
 - 安装失败的实际根因已定位：清单缺少 `applications.zotero.update_url`；
   另一并修复了 bootstrap startup 中 `reason` 未定义导致服务未启动的问题。
 
 ### 未验证 / 已知限制
 
-- 尚未在完整 GUI 中完成“选中图片注释 -> 右键 -> 识别 -> 写入笔记”的
-  鼠标交互回归；安装/激活、Worker/WASM/ONNX 加载与预热已经实测通过，
-  但真实 PDF 注释到笔记的端到端 UI 点击路径仍需你在使用环境中确认。
+- 尚未在完整 GUI 中完成“右键菜单点击”的自动化回归；Reader 打开状态下的
+  服务链路（截图→推理→笔记）已 headless 实测通过。0.1.2 的菜单延迟和
+  无窗口提示正是为规避 macOS 菜单回调重入问题。
 - `update_url` 必须使用 HTTPS（Zotero 安装校验的硬要求）；当前是
   `.invalid` 占位地址，不指向实际更新服务器。
 - 首次加载 ORT WASM + 两个 ONNX Session 在低端机器上可能需要数秒到十几秒。

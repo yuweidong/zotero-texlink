@@ -250,7 +250,7 @@ var TexLinkService = (function () {
   class Service {
     constructor(options = {}) {
       this.id = options.id || PLUGIN_ID;
-      this.version = options.version || "0.1.1";
+      this.version = options.version || "0.1.2";
       this.rootURI = options.rootURI || "";
       this.chromeBase = options.chromeBase || `chrome://${CHROME_NAME}/content/`;
 
@@ -269,6 +269,9 @@ var TexLinkService = (function () {
       this._pending = new Map();
       this._requestSeq = 0;
       this._activeProgress = null;
+      this._toasts = new Set();
+      this._diagQueue = Promise.resolve();
+      this._diagSeq = 0;
 
       // 主窗口 -> 清理函数集合。用 Map 而不是 WeakMap，便于 shutdown 时遍历。
       this._windowCleanups = new Map();
@@ -298,6 +301,7 @@ var TexLinkService = (function () {
         this._log("disabled by preference");
         return;
       }
+      this._diag("service-startup", `${this.id} ${this.version}`);
 
       // 先加载模型元数据和 tokenizer。即使模型资源损坏，也不阻断安装/启动；
       // 用户触发识别时再给出明确错误。
@@ -310,6 +314,7 @@ var TexLinkService = (function () {
         );
         this._tokenizer = new TexLinkBPEDecoder(tokenizerJSON);
         this._log(`model metadata loaded: ${this._modelConfig.displayName}`);
+        this._diag("model-metadata-loaded", this._modelConfig.id);
       }
       catch (error) {
         this._modelError = error;
@@ -404,6 +409,7 @@ var TexLinkService = (function () {
       this._windowCleanups.clear();
 
       this._unbindAllReaderWindows();
+      this._clearToasts();
 
       if (this._notifierID) {
         try { Zotero.Notifier.unregisterObserver(this._notifierID); } catch (e) { /* noop */ }
@@ -467,6 +473,41 @@ var TexLinkService = (function () {
 
     _delay(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    /**
+     * 诊断日志（0.1.2 crash 排查用）。
+     *
+     * 崩溃发生在原生层时，Zotero 的调试输出往往来不及保存；这里把关键步骤
+     * 追加到临时目录的 texlink-crash.log，供下一次启动/开发者检查。
+     * 默认开启，可用 extensions.zotero.texlink.diagnosticLog=false 关闭。
+     */
+    _diag(step, detail = "") {
+      if (!this._getPref("diagnosticLog", true)) return Promise.resolve();
+      this._diagQueue = this._diagQueue.then(async () => {
+        try {
+          const tempDir = (typeof PathUtils !== "undefined" && PathUtils.tempDir) || "/tmp";
+          const path = (typeof PathUtils !== "undefined" && PathUtils.join)
+            ? PathUtils.join(tempDir, "texlink-crash.log")
+            : `${tempDir}/texlink-crash.log`;
+          let existing = "";
+          try {
+            existing = await IOUtils.readUTF8(path);
+          }
+          catch (e) { /* 文件不存在 */ }
+          if (existing.length > 1024 * 1024) {
+            existing = existing.slice(-256 * 1024);
+          }
+          const seq = ++this._diagSeq;
+          const line = `${new Date().toISOString()} #${seq} ${step}` +
+            (detail ? ` | ${String(detail).slice(0, 500)}` : "") + "\n";
+          await IOUtils.writeUTF8(path, existing + line);
+        }
+        catch (e) {
+          // 诊断本身绝不能影响识别。
+        }
+      }).catch(() => {});
+      return this._diagQueue;
     }
 
     // ===================== 内部资源读取 =====================
@@ -659,6 +700,7 @@ var TexLinkService = (function () {
 
       if (!this._modelInitPromise) {
         this._activeProgress = progress || this._activeProgress;
+        this._diag("worker-init-start");
         this._modelInitPromise = this._workerRequest(
           "init",
           {
@@ -675,6 +717,7 @@ var TexLinkService = (function () {
         ).then(() => {
           this._modelReady = true;
           this._log("ONNX sessions ready");
+          this._diag("worker-init-done");
         }).catch((error) => {
           this._modelError = error;
           this._modelInitPromise = null;
@@ -706,10 +749,16 @@ var TexLinkService = (function () {
               ? `TexLink：识别 ${items.length} 个公式截图并写入笔记`
               : "TexLink：识别公式并写入笔记",
             onCommand: () => {
-              this._recognizeAnnotationItems(items, reader).catch((error) => {
-                this._logError("context menu recognition failed", error);
-                this._showError(error);
-              });
+              // 关键：不要在这个原生/React 菜单的回调栈里打开新的 ProgressWindow。
+              // 先把控制权还给菜单，让菜单完全关闭，再开始异步识别。
+              this._diag("reader-menu-command", items.map((x) => x.key).join(","));
+              setTimeout(() => {
+                this._diag("reader-menu-deferred");
+                this._recognizeAnnotationItems(items, reader).catch((error) => {
+                  this._logError("context menu recognition failed", error);
+                  this._showError(error, reader);
+                });
+              }, 0);
             }
           });
         }
@@ -911,10 +960,10 @@ var TexLinkService = (function () {
       event.preventDefault();
       event.stopPropagation();
       if (this._busy) {
-        this._showError(new Error("TexLink 正在处理上一条公式，请稍候。"));
+        this._showError(new Error("TexLink 正在处理上一条公式，请稍候。"), reader);
         return;
       }
-      this.recognizeFromReader(reader).catch((error) => this._showError(error));
+      this.recognizeFromReader(reader).catch((error) => this._showError(error, reader));
     }
 
     _isEditableTarget(target) {
@@ -1064,8 +1113,12 @@ var TexLinkService = (function () {
       );
 
       const handler = () => {
-        this.recognizeFromActiveReader()
-          .catch((error) => this._showError(error));
+        this._diag("tools-menu-command");
+        setTimeout(() => {
+          this._diag("tools-menu-deferred");
+          this.recognizeFromActiveReader()
+            .catch((error) => this._showError(error, this._getActiveReader()));
+        }, 0);
       };
       menuitem.addEventListener("command", handler);
       popup.appendChild(separator);
@@ -1085,7 +1138,7 @@ var TexLinkService = (function () {
       if (!reader) {
         this._showError(new Error(
           "请先打开一篇 PDF，并用图像注释工具框选公式。TexLink 不会读取剪贴板，也不会上传图片。"
-        ));
+        ), null);
         return [];
       }
       return this.recognizeFromReader(reader);
@@ -1093,14 +1146,14 @@ var TexLinkService = (function () {
 
     async recognizeFromReader(reader) {
       if (this._busy) {
-        this._showError(new Error("TexLink 正在处理上一条公式，请稍候。"));
+        this._showError(new Error("TexLink 正在处理上一条公式，请稍候。"), reader);
         return [];
       }
       const items = this._getSelectedImageAnnotations(reader);
       if (!items.length) {
         this._showError(new Error(
           "没有检测到选中的图像注释。请在 Zotero PDF 阅读器中选择“区域图像”工具，框选公式，再选中该截图后重试。"
-        ));
+        ), reader);
         return [];
       }
       return this._recognizeAnnotationItems(items, reader);
@@ -1119,17 +1172,20 @@ var TexLinkService = (function () {
       if (!Array.isArray(annotationItems) || !annotationItems.length) return [];
       if (this._busy) {
         if (!options.auto) {
-          this._showError(new Error("TexLink 正在处理上一条公式，请稍候。"));
+          this._showError(new Error("TexLink 正在处理上一条公式，请稍候。"), reader);
         }
         return [];
       }
       if (!this._modelConfig || !this._tokenizer) {
-        this._showError(new Error("公式模型/tokenizer 未加载，无法识别。请重新安装完整的 TexLink.xpi。"));
+        this._showError(new Error("公式模型/tokenizer 未加载，无法识别。请重新安装完整的 TexLink.xpi。"), reader);
         return [];
       }
 
       this._busy = true;
-      const progress = this._newProgress("准备识别公式…");
+      await this._diag("pipeline-start", options.auto ? "auto" : "manual");
+      // 让调用来源（菜单/快捷键/Notifier）先完成当前事件，再开始任何 UI 更新。
+      await this._delay(60);
+      const progress = this._newProgress("准备识别公式…", reader);
       this._activeProgress = progress;
       const results = [];
       const failures = [];
@@ -1146,7 +1202,9 @@ var TexLinkService = (function () {
         }
 
         this._setProgress(progress, 12, "正在加载离线模型…");
+        await this._diag("model-load-start");
         await this._ensureModelLoaded(progress);
+        await this._diag("model-load-end");
 
         for (let index = 0; index < annotationItems.length; index++) {
           const item = annotationItems[index];
@@ -1154,8 +1212,10 @@ var TexLinkService = (function () {
             ? `[${index + 1}/${annotationItems.length}] `
             : "";
           try {
+            await this._diag("annotation-start", item.key);
             this._setProgress(progress, 60, `${prefix}正在读取截图并推理…`);
             const result = await this._recognizeSingle(item, reader, effectiveComment, progress, prefix);
+            await this._diag("annotation-done", item.key);
             results.push(result);
           }
           catch (error) {
@@ -1188,6 +1248,7 @@ var TexLinkService = (function () {
         return results;
       }
       catch (error) {
+        await this._diag("pipeline-error", error.message || String(error));
         this._setProgress(progress, null, `TexLink 失败：${error.message || error}`, true);
         this._closeProgress(progress, 10000);
         this._logError("recognition pipeline failed", error);
@@ -1202,17 +1263,24 @@ var TexLinkService = (function () {
     // ===================== 单条识别 =====================
 
     async _recognizeSingle(annotationItem, reader, comment, progress, prefix = "") {
+      await this._diag("single-start", annotationItem.key);
       const source = this._buildSourceContext(annotationItem, reader);
+      await this._diag("source-built", source.pageLabel);
+      await this._diag("image-read-start");
       const image = await this._getAnnotationImage(annotationItem);
+      await this._diag("image-read-done", image.length);
 
       this._setProgress(progress, 64, `${prefix}正在预处理图像…`);
+      await this._diag("preprocess-start");
       const tensor = await this._preprocessImage(image);
+      await this._diag("preprocess-done", tensor.shape.join("x"));
 
       this._setProgress(progress, 68, `${prefix}正在离线识别公式…`);
       // _ensureModelLoaded 结束时会把 _activeProgress 置空；开始推理前重新挂上，
       // 这样 Worker 的解码进度才能继续更新同一个进度窗口。
       this._activeProgress = progress;
       const maxNewTokens = Number(this._getPref("maxNewTokens", 384)) || 384;
+      await this._diag("worker-request-start");
       const workerResult = await this._workerRequest(
         "recognize",
         {
@@ -1222,6 +1290,7 @@ var TexLinkService = (function () {
         [tensor.buffer],
         WORKER_RECOGNITION_TIMEOUT
       );
+      await this._diag("worker-request-done", `${workerResult.steps} steps`);
 
       const latex = this._tokenizer.decode(workerResult.tokenIds || []);
       if (!latex) {
@@ -1240,6 +1309,7 @@ var TexLinkService = (function () {
       });
 
       this._setProgress(progress, 92, `${prefix}正在写入 Zotero 笔记…`);
+      await this._diag("note-write-start");
       const noteItem = await this._writeEntryToNote({
         html,
         entryId,
@@ -1248,6 +1318,7 @@ var TexLinkService = (function () {
         latex
       });
 
+      await this._diag("note-write-done", noteItem.id);
       if (this._getPref("openNoteAfterInsert", false)) {
         try {
           await Zotero.Notes.open(noteItem.id);
@@ -1664,6 +1735,7 @@ var TexLinkService = (function () {
         throw new Error("目标笔记不可编辑（可能位于只读库或回收站）");
       }
 
+      await this._diag("write-target", target.editorInstance ? "live-editor" : "item-save");
       if (target.editorInstance && !target.editorInstance._readOnly) {
         const inserted = this._insertIntoOpenEditor(target.editorInstance, html);
         if (inserted) {
@@ -1678,7 +1750,9 @@ var TexLinkService = (function () {
         }
       }
 
+      await this._diag("append-direct-start");
       await this._appendEntryDirectly(noteItem, html);
+      await this._diag("append-direct-done");
       return noteItem;
     }
 
@@ -1729,47 +1803,104 @@ var TexLinkService = (function () {
       await noteItem.saveTx({ skipSelect: true });
     }
 
-    // ===================== 进度窗口与提示 =====================
+    // ===================== Reader 内浮层提示（不打开新窗口） =====================
 
-    _newProgress(text) {
+    /**
+     * 在 Reader 外层 HTML 文档中显示一个轻量 toast。
+     *
+     * 0.1.2 特意不再从 PDF 区域右键命令中打开 Zotero.ProgressWindow：
+     * macOS 上“原生/React 菜单回调 -> 立即 openDialog”存在窗口重入风险，
+     * 实测表现为选择菜单项后 Zotero 主进程 SIGSEGV。Toast 只是 Reader
+     * 文档里的一个 fixed div，不会触发新的原生窗口。
+     */
+    _newProgress(text, reader) {
       try {
-        const progress = new Zotero.ProgressWindow({ closeOnClick: true });
-        progress.changeHeadline("TexLink");
-        progress.progress = new progress.ItemProgress("note", text);
-        progress.progress.setProgress(5);
-        progress.show();
-        return progress;
+        const win = reader?._iframeWindow;
+        const doc = win?.document;
+        if (!doc?.body) return null;
+        let el = doc.getElementById("texlink-toast");
+        if (!el) {
+          el = doc.createElement("div");
+          el.id = "texlink-toast";
+          el.setAttribute("role", "status");
+          el.style.cssText = [
+            "position: fixed",
+            "right: 20px",
+            "bottom: 20px",
+            "z-index: 2147483647",
+            "max-width: 420px",
+            "padding: 10px 14px",
+            "border-radius: 8px",
+            "background: rgba(36, 36, 36, 0.94)",
+            "color: #fff",
+            "font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+            "box-shadow: 0 6px 24px rgba(0,0,0,0.35)",
+            "white-space: pre-wrap",
+            "word-break: break-word",
+            "pointer-events: none",
+            "opacity: 0",
+            "transition: opacity 0.15s ease"
+          ].join(";");
+          doc.body.appendChild(el);
+        }
+        clearTimeout(el.__texlinkTimer);
+        el.textContent = text;
+        el.style.background = "rgba(36, 36, 36, 0.94)";
+        el.style.opacity = "1";
+        const handle = { el };
+        this._toasts.add(handle);
+        return handle;
       }
       catch (error) {
-        this._logError("Failed to create progress window", error);
+        this._logError("Failed to create reader toast", error);
         return null;
       }
     }
 
     _setProgress(progress, percent, text, isError = false) {
-      if (!progress?.progress) return;
+      if (!progress?.el) return;
       try {
-        if (text) progress.progress.setText(text);
-        if (Number.isFinite(percent)) progress.progress.setProgress(percent);
-        if (isError) progress.progress.setError();
+        if (text) progress.el.textContent = text;
+        progress.el.style.background = isError
+          ? "rgba(150, 30, 30, 0.96)"
+          : "rgba(36, 36, 36, 0.94)";
+        progress.el.style.opacity = "1";
       }
       catch (error) {
-        this._log(`progress update failed: ${error.message}`);
+        this._log(`toast update failed: ${error.message}`);
       }
     }
 
     _closeProgress(progress, delayMs = 5000) {
-      if (!progress) return;
+      if (!progress?.el) return;
       try {
-        progress.startCloseTimer(delayMs);
+        clearTimeout(progress.el.__texlinkTimer);
+        progress.el.__texlinkTimer = setTimeout(() => {
+          try { progress.el.style.opacity = "0"; } catch (e) { /* dead doc */ }
+          this._toasts.delete(progress);
+        }, delayMs);
       }
-      catch (error) { /* noop */ }
+      catch (error) {
+        this._toasts.delete(progress);
+      }
     }
 
-    _showError(error) {
+    _clearToasts() {
+      for (const handle of this._toasts) {
+        try {
+          clearTimeout(handle.el.__texlinkTimer);
+          handle.el.remove();
+        }
+        catch (e) { /* reader may be closed */ }
+      }
+      this._toasts.clear();
+    }
+
+    _showError(error, reader = null) {
       const message = String(error?.message || error || "未知错误");
       this._logError("user-visible error", error);
-      const progress = this._newProgress(message);
+      this._diag("show-error", message);
+      const progress = this._newProgress(message, reader);
       this._setProgress(progress, null, message, true);
       this._closeProgress(progress, 10000);
     }

@@ -7,7 +7,7 @@ Zotero 10 的 Bootstrap 插件本质是一个 ZIP 文件，只是扩展名改成
 ## 1. 最终 XPI 结构
 
 ```text
-zotero-texlink-0.1.1.xpi
+zotero-texlink-0.1.2.xpi
 ├── manifest.json
 ├── bootstrap.js
 ├── prefs.js
@@ -96,8 +96,8 @@ python3 tools/build_xpi.py
 产物：
 
 ```text
-dist/zotero-texlink-0.1.1.xpi
-dist/zotero-texlink-0.1.1.xpi.sha256
+dist/zotero-texlink-0.1.2.xpi
+dist/zotero-texlink-0.1.2.xpi.sha256
 ```
 
 构建脚本会：
@@ -111,8 +111,8 @@ dist/zotero-texlink-0.1.1.xpi.sha256
 ## 4. 手动检查
 
 ```bash
-unzip -l dist/zotero-texlink-0.1.1.xpi | sed -n '1,80p'
-unzip -p dist/zotero-texlink-0.1.1.xpi manifest.json | python3 -m json.tool
+unzip -l dist/zotero-texlink-0.1.2.xpi | sed -n '1,80p'
+unzip -p dist/zotero-texlink-0.1.2.xpi manifest.json | python3 -m json.tool
 ```
 
 应满足：
@@ -153,7 +153,7 @@ Zotero 10 的插件 `manifest.json` 沿用 Zotero 7 的字段子集：
 `applications.zotero` 中 `id`、`update_url`、`strict_max_version` 是
 Zotero 10 安装校验的硬性字段。`update_url` 还必须是 `https:` 开头，否则
 AddonManager 的 `checkUpdateSecurity` 会把插件标为 `appDisabled`。
-V0.1.1 使用 `https://zotero-texlink.invalid/updates.json` 作为不带真实
+V0.1.2 使用 `https://zotero-texlink.invalid/updates.json` 作为不带真实
 服务器的占位地址；插件运行时代码不会请求它。正式分发时应替换为真实的
 HTTPS 更新清单 URL。
 
