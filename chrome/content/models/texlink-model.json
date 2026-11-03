@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "id": "pix2text-mfr-int8",
+  "displayName": "Pix2Text MFR 1.0 / TrOCR（INT8）",
+  "license": "MIT",
+  "source": "https://huggingface.co/breezedeus/pix2text-mfr",
+  "files": {
+    "encoder": "encoder_model_int8.onnx",
+    "decoder": "decoder_model_int8.onnx",
+    "tokenizer": "tokenizer.json"
+  },
+  "input": {
+    "name": "pixel_values",
+    "channels": 3,
+    "height": 384,
+    "width": 384,
+    "mean": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "std": [
+      0.5,
+      0.5,
+      0.5
+    ]
+  },
+  "encoderOutput": "last_hidden_state",
+  "decoder": {
+    "inputIds": "input_ids",
+    "encoderHiddenStates": "encoder_hidden_states",
+    "logits": "logits",
+    "startTokenId": 2,
+    "eosTokenId": 2,
+    "padTokenId": 0,
+    "vocabSize": 1200,
+    "maxNewTokens": 384
+  },
+  "tokenizer": {
+    "kind": "bpe-bytelevel",
+    "bosToken": "<s>",
+    "eosToken": "</s>",
+    "padToken": "<pad>",
+    "unkToken": "<unk>"
+  },
+  "preprocessing": {
+    "resample": "bicubic",
+    "binarize": false,
+    "padValue": 1.0
+  },
+  "assets": {
+    "encoderSha256": "4ccd7d45173a08ad703203e1de0aa205421ed66a4972f553d0882cd74857940f",
+    "decoderSha256": "1b81c99876de606631449eacf1af32ce372f5641ebed3216e0208bde2bdbeaa6",
+    "tokenizerSha256": "3e2ab757277d22639bec28c9d7972e352d3d1dba223051fa674002dc5ab64df3"
+  }
+}

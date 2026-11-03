@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+build/
+node_modules/
+.zotero-test-profile/
+dist/*.xpi
+dist/*.sha256
