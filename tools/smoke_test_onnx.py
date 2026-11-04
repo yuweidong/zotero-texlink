@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""端到端验证打包在 XPI 中的 INT8 ONNX 模型。
+"""End-to-end smoke test for the INT8 ONNX models bundled in the XPI.
 
-这个脚本属于构建/测试期工具，不会被打进 XPI。它刻意复现
-texlink-service.js + worker.js 的关键数值路径：
+Build/test-time only; not included in the XPI. It reproduces the numerical path
+used by texlink-service.js + worker.js:
 
   RGB -> 384x384 BICUBIC -> /255 -> (x-0.5)/0.5 -> CHW float32
   encoder -> greedy decoder -> token ids -> ByteLevel BPE -> LaTeX
 
-依赖：
+Dependencies:
     pip install onnxruntime numpy pillow
 
-用法：
-    python3 tools/smoke_test_onnx.py [图片路径]
+Usage:
+    python3 tools/smoke_test_onnx.py [image-path]
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ DEFAULT_IMAGE = ROOT / "tests/fixtures/formula.png"
 
 
 def build_byte_decoder() -> dict[str, int]:
-    """与 service 中 _buildByteMap 完全一致的 GPT-2 ByteLevel 映射。"""
+    """GPT-2 ByteLevel map matching _buildByteMap in the service."""
     bs = list(range(ord("!"), ord("~") + 1))
     bs += list(range(ord("¡"), ord("¬") + 1))
     bs += list(range(ord("®"), ord("ÿ") + 1))
@@ -63,7 +63,7 @@ def decode_ids(ids: list[int], tokenizer: dict) -> str:
 def main() -> None:
     image_path = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_IMAGE
     if not image_path.is_file():
-        raise SystemExit(f"测试图片不存在：{image_path}")
+        raise SystemExit(f"Test image not found: {image_path}")
 
     import json
 
@@ -105,14 +105,14 @@ def main() -> None:
             break
 
     latex = decode_ids(ids[1:], tokenizer)
-    print(f"图片：{image_path}")
-    print(f"tokens：{len(ids) - 2}")
-    print(f"LaTeX：{latex}")
+    print(f"Image: {image_path}")
+    print(f"Tokens: {len(ids) - 2}")
+    print(f"LaTeX: {latex}")
     if not latex:
-        raise SystemExit("模型返回空结果")
+        raise SystemExit("Model returned an empty result")
     if not latex.startswith("\\"):
-        raise SystemExit("输出不像 LaTeX（不是以反斜杠开头）")
-    print("[OK] ONNX 推理与纯 JS 同构的 BPE 字节解码验证通过")
+        raise SystemExit("Output does not look like LaTeX (missing leading backslash)")
+    print("[OK] ONNX inference and JS-compatible BPE byte decoding passed")
 
 
 if __name__ == "__main__":
