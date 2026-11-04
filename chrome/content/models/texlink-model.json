@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "pix2text-mfr-int8",
-  "displayName": "Pix2Text MFR 1.0 / TrOCR（INT8）",
+  "displayName": "Pix2Text MFR 1.0 / TrOCR (INT8)",
   "license": "MIT",
   "source": "https://huggingface.co/breezedeus/pix2text-mfr",
   "files": {
