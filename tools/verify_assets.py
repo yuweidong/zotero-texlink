@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""校验 TexLink 打包资源是否完整、是否为预期的 INT8 模型与离线资源。
+"""Validate TexLink bundle assets, INT8 model hashes, and offline constraints.
 
-用法：
+Usage:
     python3 tools/verify_assets.py
 
-只依赖 Python 标准库。构建 XPI 前运行，避免把 404 占位文件或错误的
-tokenizer 打进最终交付物。
+Standard library only. Run before building the XPI to catch missing files or a
+wrong tokenizer before packaging.
 """
 from __future__ import annotations
 
@@ -54,23 +54,24 @@ def main() -> None:
     ]
     for path in required:
         if not path.is_file() or path.stat().st_size == 0:
-            fail(f"缺少资源：{path.relative_to(ROOT)}")
+            fail(f"Missing asset: {path.relative_to(ROOT)}")
 
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     zotero = manifest.get("applications", {}).get("zotero", {})
     if manifest.get("manifest_version") != 2:
-        fail("manifest_version 必须为 2")
+        fail("manifest_version must be 2")
     if not zotero.get("id", "").endswith("@yuweidong.dev"):
-        fail("manifest 中的 Zotero 插件 ID 不符合预期")
+        fail("Unexpected Zotero plugin ID in manifest")
     if str(zotero.get("strict_min_version")) != "10.0":
-        fail("strict_min_version 必须为 10.0")
+        fail("strict_min_version must be 10.0")
     if "permissions" in manifest:
-        fail("Zotero bootstrap 插件清单不使用 WebExtension permissions 字段")
-    # Zotero 10 的 ExtensionData 校验强制要求 update_url；同时
-    # AddonManager.checkUpdateSecurity 要求它以 https: 开头，否则 appDisabled。
+        fail("Zotero bootstrap manifests must not declare WebExtension permissions")
+    # Zotero 10's ExtensionData validation requires update_url, and
+    # AddonManager.checkUpdateSecurity requires an https: URL or it marks the
+    # add-on appDisabled.
     update_url = str(zotero.get("update_url", ""))
     if not update_url.startswith("https://"):
-        fail("applications.zotero.update_url 缺失或不是 https://，插件会被 Zotero 禁用")
+        fail("applications.zotero.update_url is missing or not https://; Zotero will disable the add-on")
 
     config = json.loads((MODEL_DIR / "texlink-model.json").read_text(encoding="utf-8"))
     expected = config.get("assets", {})
@@ -81,31 +82,32 @@ def main() -> None:
     ]:
         actual = sha256(MODEL_DIR / filename)
         if actual != expected.get(key):
-            fail(f"{filename} SHA256 不匹配：{actual}")
+            fail(f"{filename} SHA256 mismatch: {actual}")
 
     tokenizer = json.loads((MODEL_DIR / "tokenizer.json").read_text(encoding="utf-8"))
     if tokenizer.get("model", {}).get("type") != "BPE":
-        fail("tokenizer.json 不是 BPE 模型")
+        fail("tokenizer.json is not a BPE model")
     if tokenizer.get("decoder", {}).get("type") != "ByteLevel":
-        fail("tokenizer decoder 不是 ByteLevel，请检查模型转换步骤")
+        fail("tokenizer decoder is not ByteLevel; check the conversion steps")
     vocab = tokenizer.get("model", {}).get("vocab", {})
     if len(vocab) != config["decoder"]["vocabSize"]:
         fail(
-            f"tokenizer 词表大小 {len(vocab)} 与模型配置 "
-            f"{config['decoder']['vocabSize']} 不一致"
+            f"tokenizer vocabulary size {len(vocab)} does not match "
+            f"model config {config['decoder']['vocabSize']}"
         )
 
-    # 确保运行时不会意外访问外网。这里只扫代码，不扫文档/模型配置。
+    # Ensure runtime code cannot accidentally reach the network. Scan code only,
+    # not documentation or model metadata.
     external_pattern = re.compile(r"(?:https?:)?//[a-z0-9.-]+\.[a-z]{2,}", re.I)
     for path in RUNTIME_JS:
         text = path.read_text(encoding="utf-8")
         for match in external_pattern.finditer(text):
             line = text.count("\n", 0, match.start()) + 1
-            fail(f"{path.relative_to(ROOT)}:{line} 出现外部 URL：{match.group(0)}")
+            fail(f"{path.relative_to(ROOT)}:{line} contains an external URL: {match.group(0)}")
         if re.search(r"\bfetch\s*\(\s*[\"']https?://", text):
-            fail(f"{path.relative_to(ROOT)} 包含外部 fetch")
+            fail(f"{path.relative_to(ROOT)} contains an external fetch")
 
-    print("[OK] manifest / 模型 / tokenizer / ORT 资源校验通过")
+    print("[OK] manifest / models / tokenizer / ORT assets verified")
     print(f"     encoder : {MODEL_DIR.joinpath('encoder_model_int8.onnx').stat().st_size / 1024 / 1024:.1f} MiB")
     print(f"     decoder : {MODEL_DIR.joinpath('decoder_model_int8.onnx').stat().st_size / 1024 / 1024:.1f} MiB")
     print(f"     wasm    : {ORT_DIR.joinpath('ort-wasm-simd.wasm').stat().st_size / 1024 / 1024:.1f} MiB")
