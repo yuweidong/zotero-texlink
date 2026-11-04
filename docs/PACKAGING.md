@@ -1,13 +1,13 @@
-# XPI 打包说明
+# XPI packaging
 
-Zotero 10 的 Bootstrap 插件本质是一个 ZIP 文件，只是扩展名改成 `.xpi`。
-`manifest.json`、`bootstrap.js`、`prefs.js` 必须位于 ZIP 根目录，不能多套一层
-目录。
+A Zotero 10 bootstrap plugin is a ZIP archive with an `.xpi` extension.
+`manifest.json`, `bootstrap.js`, and `prefs.js` must be at the ZIP root; do not
+nest them inside an extra directory.
 
-## 1. 最终 XPI 结构
+## 1. XPI layout
 
 ```text
-zotero-texlink-0.1.2.xpi
+zotero-texlink-<version>.xpi
 ├── manifest.json
 ├── bootstrap.js
 ├── prefs.js
@@ -37,12 +37,12 @@ zotero-texlink-0.1.2.xpi
             └── texlink-96.png
 ```
 
-**不要**把 `README.md`、`docs/`、`tools/`、`tests/`、`.venv` 打进运行包；
-构建脚本会自动排除它们。
+Do **not** package `README.md`, `docs/`, `tools/`, `tests/`, or `.venv` into the
+runtime XPI. The build script excludes them automatically.
 
-## 2. 资源路径映射
+## 2. Resource URL mapping
 
-`bootstrap.js` 在启动时执行：
+At startup `bootstrap.js` runs:
 
 ```js
 const aomStartup = Components.classes[
@@ -54,124 +54,130 @@ chromeHandle = aomStartup.registerChrome(manifestURI, [
 ]);
 ```
 
-因此 Zip 内：
+A file stored at:
 
 ```text
 chrome/content/scripts/worker.js
 ```
 
-对应的运行期 URL 是：
+is therefore available at:
 
 ```text
 chrome://zotero-texlink/content/scripts/worker.js
 ```
 
-模型、tokenizer、ORT 的 `.wasm` 都通过同一前缀访问：
-`chrome://zotero-texlink/content/{models,vendor/ort}/...`。
+The model, tokenizer, and ORT WASM use the same prefix:
+`chrome://zotero-texlink/content/{models,vendor/ort}/...`.
 
-V0.1 固定使用 onnxruntime-web 1.17.3 的单线程 WASM 资产
-（`ort-wasm-simd.wasm`）。Worker 先读取该文件，再通过 Blob URL 交给
-Emscripten；这样不会依赖 `SharedArrayBuffer`，也绕开了 chrome:// 的资源
-fetch 差异。
+TexLink pins onnxruntime-web 1.17.3 and its non-threaded WASM asset
+(`ort-wasm-simd.wasm`). The Worker reads the file and exposes it to Emscripten
+through a Blob URL. This avoids a dependency on `SharedArrayBuffer` and works
+around browser differences in fetching `chrome://` resources.
 
-这比把 `file:///...` 绝对路径写死更安全，也不会因为 Windows/macOS 路径
-分隔符不同而出错。
+This is safer than hard-coding `file:///...` paths and is independent of
+platform path separators.
 
-### 为什么没有 `chrome.manifest`？
+### Why no `chrome.manifest`?
 
-可以在 XPI 根放一个 `chrome.manifest`，但 Zotero 10 的现代插件普遍在
-`bootstrap.js` 中动态注册（本项目也一样），这样：
+A static `chrome.manifest` at the XPI root is possible, but modern Zotero 10
+plugins usually register their content package from `bootstrap.js` (as TexLink
+does). This:
 
-- 不依赖应用启动时扫描 XPI 内的旧式 manifest；
-- 卸载时可以用 `chromeHandle.destruct()` 精确释放；
-- 不会与其它插件的内容包名冲突。
+- does not depend on the application scanning a legacy manifest at startup;
+- lets `chromeHandle.destruct()` release the mapping precisely on unload;
+- avoids content-package name collisions with other plugins.
 
-## 3. 构建命令
+## 3. Build
 
 ```bash
 python3 tools/verify_assets.py
 python3 tools/build_xpi.py
 ```
 
-产物：
+Artifacts:
 
 ```text
-dist/zotero-texlink-0.1.2.xpi
-dist/zotero-texlink-0.1.2.xpi.sha256
+dist/zotero-texlink-<version>.xpi
+dist/zotero-texlink-<version>.xpi.sha256
 ```
 
-构建脚本会：
+The build script:
 
-1. 校验清单（含 `update_url` 必须以 `https://` 开头）、模型 SHA256、
-   tokenizer 词表大小、ORT 文件；
-2. 扫描运行期 JS，拒绝出现外部 HTTP URL；
-3. 把 runtime 文件以 deflate 压缩进 XPI；
-4. 计算 XPI 的 SHA256。
+1. validates the manifest (including the required HTTPS `update_url`), model
+   SHA256 values, tokenizer vocabulary size, and ORT assets;
+2. scans runtime JavaScript and rejects external HTTP URLs;
+3. writes runtime files into the XPI with deflate compression;
+4. computes the XPI SHA256.
 
-## 4. 手动检查
+## 4. Manual checks
 
 ```bash
-unzip -l dist/zotero-texlink-0.1.2.xpi | sed -n '1,80p'
-unzip -p dist/zotero-texlink-0.1.2.xpi manifest.json | python3 -m json.tool
+unzip -l dist/zotero-texlink-<version>.xpi | sed -n '1,80p'
+unzip -p dist/zotero-texlink-<version>.xpi manifest.json | python3 -m json.tool
 ```
 
-应满足：
+Expected:
 
-- `manifest.json` 在第一层；
-- `chrome/content/models/encoder_model_int8.onnx` 存在；
-- `chrome/content/vendor/ort/ort-wasm-simd.wasm` 存在；
-- 不存在 `__MACOSX/`、`.DS_Store`；
-- XPI 大小约 25 MiB（未压缩约 43 MiB；模型 ~31 MiB，WASM ~10 MiB，其余很小）。
+- `manifest.json` is at the top level;
+- `chrome/content/models/encoder_model_int8.onnx` exists;
+- `chrome/content/vendor/ort/ort-wasm-simd.wasm` exists;
+- no `__MACOSX/` or `.DS_Store` entries;
+- the XPI is approximately 25 MiB (about 43 MiB uncompressed: models about
+  31 MiB, WASM about 10 MiB, and a small amount of code).
 
-## 5. 安装与开发
+## 5. Install and development
 
-### 正常安装
+### Normal installation
 
-Zotero 10 → 工具 → 插件 → 齿轮 → 从文件安装插件 → 选择 XPI。
-未签名插件会显示 Zotero 的警告，这是 Zotero 侧的正常流程。
+Zotero 10 → Tools → Add-ons → gear menu → Install Add-on From File… → select
+the XPI. Zotero shows its standard warning for unsigned add-ons.
 
-### 开发期
+### Development
 
-不建议把 `chrome/` 目录直接作为插件安装：`chrome://` 映射依赖 XPI 安装后
-的 `rootURI`。应该每次重新构建 XPI 并安装，或在 Zotero 的配置文件中指向
-真实 XPI 路径进行调试。
+Do not install the `chrome/` directory directly. The `chrome://` mapping
+depends on the `rootURI` of an installed XPI. Rebuild and install the XPI, or
+point a dedicated debug profile at the real XPI path.
 
-### 更新时
+### Updating
 
-- `manifest.json` 里的 `version` 必须递增；
-- 不要修改插件 ID `zotero-texlink@yuweidong.dev`，否则会被当成另一个插件；
-- 若模型文件变化，同步更新 `texlink-model.json` 中的 SHA256；
-- 升级后完全退出并重启 Zotero，避免旧 Worker 仍持有旧模型。
+- Increment `version` in `manifest.json`.
+- Do not change the plugin ID `zotero-texlink@yuweidong.dev`; Zotero would treat
+  it as a different plugin.
+- If model files change, update the SHA256 values in `texlink-model.json`.
+- Fully quit and restart Zotero after an upgrade so an old Worker cannot keep
+  an old model open.
 
-## 6. 关于“权限声明”
+## 6. Manifest permissions
 
-Zotero 10 的插件 `manifest.json` 沿用 Zotero 7 的字段子集：
-`manifest_version`、`name`、`version`、`description`、`author`、`icons`、
-`applications.zotero` 等。它**不是**普通 Firefox WebExtension，也没有
-`permissions` 字段可声明 `webRequest`/`storage` 等权限。
+Zotero 10's plugin manifest uses a subset of Zotero 7 fields: `manifest_version`,
+`name`, `version`, `description`, `author`, `icons`, and `applications.zotero`.
+It is **not** a regular Firefox WebExtension, and there is no `permissions`
+field for `webRequest` or `storage`.
 
-`applications.zotero` 中 `id`、`update_url`、`strict_max_version` 是
-Zotero 10 安装校验的硬性字段。`update_url` 还必须是 `https:` 开头，否则
-AddonManager 的 `checkUpdateSecurity` 会把插件标为 `appDisabled`。
-V0.1.2 使用 `https://zotero-texlink.invalid/updates.json` 作为不带真实
-服务器的占位地址；插件运行时代码不会请求它。正式分发时应替换为真实的
-HTTPS 更新清单 URL。
+Within `applications.zotero`, `id`, `update_url`, and `strict_max_version` are
+required by Zotero 10's install validation. `update_url` must start with
+`https:`; otherwise the Addon Manager's `checkUpdateSecurity` marks the add-on
+as `appDisabled`. TexLink uses
+`https://zotero-texlink.invalid/updates.json` as a placeholder with no real
+server, and runtime code never requests it. Replace it with a real HTTPS update
+manifest URL before public distribution.
 
-本插件的“能力边界”由代码本身保证：
+The plugin's capability boundary is enforced by its code:
 
-- 只访问 `chrome://zotero-texlink/` 内部资源；
-- 只调用 Zotero 对象模型和内部 Reader 的只读 UI 字段；
-- 不发起外部网络请求；
-- 不调用外部进程；
-- 模型、WASM、tokenizer 全量随包。
+- it reads only `chrome://zotero-texlink/` resources;
+- it uses the Zotero object model and a few guarded, read-only Reader UI fields;
+- it makes no external network requests;
+- it launches no external process;
+- it bundles the model, WASM, and tokenizer in full.
 
-因此清单中没有 `permissions`，这是正确做法，不是遗漏。
+The absence of a `permissions` field is therefore intentional.
 
-## 7. 签名与分发
+## 7. Signing and distribution
 
-Zotero 插件默认不需要 Mozilla 签名。公开分发时建议：
+Zotero add-ons do not require a Mozilla signature by default. For public
+distribution:
 
-1. 发布 `.xpi` 和对应的 `.sha256`；
-2. 在 README 中说明模型来源与 MIT 许可；
-3. 如果通过 Zotero 插件市场或组织内部审核，按审核方的签名/供应链要求
-   处理；不要伪造 Mozilla 签名。
+1. publish the `.xpi` and its `.sha256`;
+2. document the model provenance and MIT licenses;
+3. follow the signing and supply-chain requirements of any marketplace or
+   organization that reviews the add-on. Never forge a Mozilla signature.
