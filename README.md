@@ -96,29 +96,29 @@ template so that a malformed preference cannot silently destroy the math node.
 
 ```text
 ┌───────────────────────────── Zotero 10 UI thread ─────────────────────────────┐
-│                                                                              │
-│  Native PDF region-image annotation                                          │
-│       │                                                                      │
-│       ├─ Zotero.Annotations.toJSON() → data:image/png;base64                 │
-│       │                                                                      │
-│       └─ Canvas: transparent-to-white, resize to 384×384, RGB normalize,     │
-│          CHW Float32Array                                                    │
-│                              │                                               │
-│                              ▼ transferable ArrayBuffer (zero copy)          │
-│  ┌──────────────────────────── Web Worker ────────────────────────────────┐  │
-│  │ onnxruntime-web 1.17.3, non-threaded WASM                             │  │
-│  │ Pix2Text-MFR INT8 encoder → hidden states                             │  │
-│  │ decoder → greedy token ids                                            │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-│                              │ token ids                                     │
-│                              ▼                                               │
-│  Pure-JS ByteLevel BPE decoder → LaTeX                                       │
-│                              │                                               │
-│                              ▼                                               │
-│  Zotero.Item("note") + setNote()/saveTx(), or live editor insertHTML        │
-│  KaTeX preview + source + page label + timestamp + links + comment           │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+│                                                                               │
+│  Native PDF region-image annotation                                           │
+│       │                                                                       │
+│       ├─ Zotero.Annotations.toJSON() → data:image/png;base64                  │
+│       │                                                                       │
+│       └─ Canvas: transparent-to-white, resize to 384×384, RGB normalize,      │
+│          CHW Float32Array                                                     │
+│                              │                                                │
+│                              ▼ transferable ArrayBuffer (zero copy)           │
+│  ┌──────────────────────────── Web Worker ────────────────────────────────┐   │
+│  │ onnxruntime-web 1.17.3, non-threaded WASM                              │   │
+│  │ Pix2Text-MFR INT8 encoder → hidden states                              │   │
+│  │ decoder → greedy token ids                                             │   │
+│  └────────────────────────────────────────────────────────────────────────┘   │
+│                              │ token ids                                      │
+│                              ▼                                                │
+│  Pure-JS ByteLevel BPE decoder → LaTeX                                        │
+│                              │                                                │
+│                              ▼                                                │
+│  Zotero.Item("note") + setNote()/saveTx(), or live editor insertHTML          │
+│  KaTeX preview + source + page label + timestamp + links + comment            │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Only the small 384 × 384 image is processed on the UI thread. Model loading,
@@ -169,9 +169,9 @@ official-model conversion and INT8 quantization commands.
 ## Install
 
 1. Open Zotero 10.
-2. Go to **Tools → Add-ons → gear menu → Install Add-on From File…**
-3. Choose the `.xpi` from `dist/`.
-4. Restart Zotero or disable and re-enable TexLink.
+2. Download the `.xpi` file from the [Releases page]
+3. Go to **Tools → Add-ons → gear menu → Install Add-on From File…**, then select the downloaded `.xpi`.
+4. Restart Zotero, or disable and re-enable TexLink in the Add-ons Manager.
 
 The XPI is about 25 MiB. On first use, Zotero compiles the WASM runtime and
 loads two ONNX sessions in the Worker; later recognitions are much faster.
