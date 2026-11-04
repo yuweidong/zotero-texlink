@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""构建期：下载官方 Pix2Text-MFR ONNX，并做 INT8 动态量化。
+"""Build-time download and INT8 dynamic quantization for Pix2Text-MFR.
 
-注意：此脚本只用于**构建阶段**，绝不会被包含进运行期 XPI，也不会被
-Zotero 调用。
+This script is **build-time only**. It is never included in the runtime XPI and
+is never called by Zotero.
 
-官方仓库已经提供了 ONNX encoder/decoder，所以我们不再从 PyTorch 导出，
-避免不同 transformers / optimum 版本造成的图差异。流程：
+The official repository already provides ONNX encoder/decoder files, so there
+is no PyTorch export and no graph variation from transformers/optimum
+versions. Flow:
 
-    Hugging Face 官方 ONNX
+    official Hugging Face ONNX
         -> onnxruntime.quantization.quantize_dynamic(QInt8)
         -> encoder_model_int8.onnx / decoder_model_int8.onnx
-        -> 复制 tokenizer.json/config.json
-        -> 计算 SHA256，更新 chrome/content/models/texlink-model.json
+        -> copy tokenizer.json/config.json
+        -> compute SHA256 values for chrome/content/models/texlink-model.json
 
-依赖：
+Dependencies:
     pip install "huggingface_hub>=0.23" "onnxruntime>=1.19" onnx
 """
 from __future__ import annotations
@@ -52,7 +53,7 @@ def main() -> None:
         "--out",
         type=pathlib.Path,
         default=pathlib.Path("build/pix2text-mfr-int8"),
-        help="输出目录",
+        help="Output directory",
     )
     args = parser.parse_args()
     out = args.out.resolve()
@@ -77,8 +78,8 @@ def main() -> None:
             str(src),
             str(dst),
             weight_type=QuantType.QInt8,
-            # 动态量化足以覆盖 MatMul / Gather 权重；不额外做静态校准，
-            # 保持构建链路简单、可复现。
+            # Dynamic quantization covers MatMul/Gather weights. No static
+            # calibration is used, keeping the build simple and reproducible.
         )
 
     for name in ("tokenizer.json", "config.json", "preprocessor_config.json", "generation_config.json"):
@@ -91,12 +92,12 @@ def main() -> None:
         "decoderSha256": sha256(out / "decoder_model_int8.onnx"),
         "tokenizerSha256": sha256(out / "tokenizer.json"),
     }
-    print("\n[sha256] 把下面的值写回 chrome/content/models/texlink-model.json：")
+    print("\n[sha256] Write these values back to chrome/content/models/texlink-model.json:")
     print(json.dumps(hashes, indent=2, ensure_ascii=False))
-    print(f"\n[done] 把 {out} 下四个文件复制到 chrome/content/models/，")
-    print("       并把 encoder/decoder 重命名为 encoder_model_int8.onnx / decoder_model_int8.onnx。")
-    print("\n提示：本项目自带模型由 onnxruntime==1.19.2 量化得到；")
-    print("      换用其它 ORT 版本时 SHA256 可能变化，必须同步更新 texlink-model.json。")
+    print(f"\n[done] Copy the four files from {out} into chrome/content/models/,")
+    print("       using the encoder_model_int8.onnx and decoder_model_int8.onnx names.")
+    print("\nNote: the bundled files were quantized with onnxruntime==1.19.2;")
+    print("      another ORT version can change the hashes. Update texlink-model.json.")
 
 
 if __name__ == "__main__":
