@@ -1,19 +1,23 @@
 /*
- * TexLink — Zotero 10 Bootstrap 插件入口
+ * TexLink - Zotero 10 bootstrap entry point
  *
- * 本文件必须位于 XPI 根目录，由 Zotero.Plugins 通过 Services.scriptloader
- * 加载到插件专属的 Cu.Sandbox 中。它不操作任何 UI 细节，只负责：
- *   1. 注册 chrome:// 资源映射；
- *   2. 把 texlink-service.js 载入插件沙箱；
- *   3. 把 Zotero 的窗口生命周期回调转发给服务对象；
- *   4. 在禁用/卸载时释放资源。
+ * This file must live at the root of the XPI. Zotero loads it through
+ * Services.scriptloader into a plugin-specific Cu.Sandbox. The bootstrap owns
+ * only lifecycle and resource wiring:
  *
- * 中文说明：
- * - Zotero 10 仍然使用 bootstrapped extension 生命周期，而不是 XUL overlay。
- * - 不能在顶层直接访问 window/document；窗口相关逻辑必须放到 onMainWindowLoad。
- * - `rootURI` 在 XPI 环境中是 jar:file:///... 形式，末尾一定有 "/"。
- * - `chrome://` 映射通过 AddonManager 的 registerChrome() 动态注册，
- *   这是 Zotero 插件访问自身打包资源的常用做法；等价于旧式 chrome.manifest。
+ *   1. register the plugin's chrome:// package;
+ *   2. load texlink-service.js into the plugin sandbox;
+ *   3. forward Zotero window lifecycle callbacks to the service;
+ *   4. release resources when the plugin is disabled or uninstalled.
+ *
+ * Notes:
+ * - Zotero 10 uses the bootstrapped-extension lifecycle, not XUL overlays.
+ * - Never access window/document at the top level; window-specific work must
+ *   happen in onMainWindowLoad().
+ * - rootURI is a jar:file:///... URL in an installed XPI and always ends with "/".
+ * - The chrome:// mapping is registered dynamically with the Addon Manager.
+ *   This is the modern equivalent of a static chrome.manifest and keeps the
+ *   resource namespace scoped to this plugin.
  */
 
 "use strict";
@@ -36,18 +40,19 @@ function texlinkError(message, error) {
 }
 
 /**
- * extension 安装时调用。V0.1 不写注册表，无需额外操作。
- * 注意：install 在 profile 内执行，可能早于 Zotero 初始化。
+ * Called when the extension is installed. No persistent registry entries are
+ * needed. Note that install() runs in the profile and may happen before Zotero
+ * has finished initializing.
  */
 function install() {
   texlinkLog("install");
 }
 
 /**
- * 插件启用 / Zotero 启动时调用。
+ * Called when the plugin is enabled or when Zotero starts.
  *
  * @param {{id: string, version: string, rootURI: string}} data
- * @param {number} reason Zotero 注入的 APP_STARTUP / ADDON_ENABLE 等常量
+ * @param {number} reason Zotero-provided APP_STARTUP / ADDON_ENABLE constant
  */
 async function startup({ id, version, rootURI }, reason) {
   texlinkLog(`startup ${version}`);
@@ -56,16 +61,16 @@ async function startup({ id, version, rootURI }, reason) {
     throw new Error(`Unexpected plugin id: ${id}`);
   }
 
-  // Zotero 的很多服务尚未就绪；先等核心初始化完成。
+  // Many Zotero services are not ready yet; wait for core initialization.
   await Zotero.initializationPromise;
 
   /*
-   * 动态注册 chrome 包：
+   * Register the chrome package:
    *   chrome://zotero-texlink/content/xxx
-   *   -> <XPI>/chrome/content/xxx
+   *     -> <XPI>/chrome/content/xxx
    *
-   * 这样 Worker、WASM、ONNX、tokenizer 都可以通过内部协议加载，
-   * 不需要 file:// 或任何外部 HTTP 服务器。
+   * This lets the Worker, WASM, ONNX models, and tokenizer load through an
+   * internal protocol. No file:// URLs or external HTTP servers are involved.
    */
   try {
     const aomStartup = Components.classes[
@@ -78,15 +83,15 @@ async function startup({ id, version, rootURI }, reason) {
     texlinkLog("chrome package registered");
   }
   catch (error) {
-    // 注册失败无法继续：Worker 和模型都依赖 chrome:// 路径。
+    // Without the mapping, the Worker and model cannot be loaded.
     texlinkError("Failed to register chrome package", error);
     throw error;
   }
 
   /*
-   * 插件脚本必须显式加载到当前 sandbox。
-   * 这里把少量上下文传进去，服务类会挂到 Zotero.TexLink 上，
-   * 后续窗口回调就能从任意 Zotero 上下文访问到同一个实例。
+   * Load the service implementation into this sandbox. A small context object
+   * carries the plugin identity and resource base. The service is exposed as
+   * Zotero.TexLink so window callbacks can reach the same instance.
    */
   const context = {
     rootURI,
@@ -105,7 +110,8 @@ async function startup({ id, version, rootURI }, reason) {
     throw new Error("texlink-service.js did not define TexLinkService");
   }
 
-  // 插件升级/热重载时先关闭旧实例，避免旧 Worker/Notifier 与新实例并存。
+  // On upgrade or hot reload, stop the previous instance before replacing it
+  // so its Worker, observers, and window bindings do not leak.
   if (Zotero.TexLink) {
     try {
       await Zotero.TexLink.shutdown();
@@ -128,14 +134,15 @@ async function startup({ id, version, rootURI }, reason) {
   }
   catch (error) {
     texlinkError("TexLink startup failed", error);
-    // 不让异常冒泡到 Zotero 的启动流程，避免影响其它插件；
-    // 服务内部会把错误记录到调试输出，并在用户触发时给出提示。
+    // Do not abort Zotero's startup sequence because of this plugin. The
+    // service logs the error and reports actionable failures to the user.
   }
 }
 
 /**
- * 主窗口加载完成后调用。Zotero 可能在一次会话中重新打开主窗口，
- * 因此所有窗口级 DOM/事件绑定都必须放在这里，并且可以重复调用。
+ * Called after a main window has loaded. Zotero can reopen its main window
+ * during a session, so all window-level DOM and event wiring belongs here and
+ * must be idempotent.
  */
 async function onMainWindowLoad({ window }) {
   try {
@@ -147,7 +154,8 @@ async function onMainWindowLoad({ window }) {
 }
 
 /**
- * 主窗口关闭前调用。必须清理窗口级监听器，避免内存泄漏。
+ * Called before a main window closes. Remove window-level listeners to avoid
+ * memory leaks.
  */
 function onMainWindowUnload({ window }) {
   try {
@@ -159,10 +167,10 @@ function onMainWindowUnload({ window }) {
 }
 
 /**
- * 插件禁用 / 卸载 / Zotero 退出时调用。
+ * Called when the plugin is disabled/uninstalled or when Zotero exits.
  *
- * APP_SHUTDOWN 时直接返回是 Zotero 插件的惯用做法：
- * 应用即将退出，XPI 资源马上销毁，没必要再做耗时清理。
+ * Returning immediately for APP_SHUTDOWN is the usual Zotero plugin pattern:
+ * the application is going away and its resources are destroyed shortly.
  */
 async function shutdown({ id, version, rootURI }, reason) {
   texlinkLog(`shutdown ${version}, reason=${reason}`);
@@ -192,7 +200,7 @@ async function shutdown({ id, version, rootURI }, reason) {
 }
 
 /**
- * 卸载时调用。shutdown 已经释放了运行期资源，这里只需记录。
+ * Called on uninstall. shutdown() has already released runtime resources.
  */
 function uninstall() {
   texlinkLog("uninstall");
