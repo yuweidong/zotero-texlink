@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /*
- * 纯 JS ByteLevel BPE 解码回归测试。
+ * Pure-JS ByteLevel BPE decoder regression test.
  *
- * 用法：
+ * Usage:
  *   node tests/tokenizer_decode.test.js
  *
- * 期望字符串来自同版本 tokenizer 在 Python `tokenizers` 中的解码结果；
- * 测试不需要 Zotero，只加载 service 文件中的静态解码器。
+ * The expected string comes from the same tokenizer decoded with Python
+ * `tokenizers`. The test does not need Zotero; it loads only the static decoder
+ * from the service file.
  */
 "use strict";
 
