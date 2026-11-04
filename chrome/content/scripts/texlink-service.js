@@ -1,31 +1,34 @@
 /*
- * TexLink 核心服务
- * ================
+ * TexLink core service
+ * ====================
  *
- * 这个文件由 bootstrap.js 通过 Services.scriptloader.loadSubScript 载入
- * 插件专属的 Chrome 沙箱。它不直接依赖任何构建工具，所有运行期逻辑都在
- * Zotero 10 内完成：
+ * bootstrap.js loads this file into the plugin's own Chrome sandbox via
+ * Services.scriptloader.loadSubScript. There are no build-time dependencies;
+ * all runtime logic runs inside Zotero 10:
  *
- *   原生图片注释（截图）
- *        -> Zotero.Annotations.toJSON() 读取本地图片缓存
- *        -> Canvas 缩放/归一化（主线程，图像很小）
- *        -> Web Worker + onnxruntime-web + INT8 ONNX 推理
- *        -> 纯 JS BPE 解码 LaTeX
- *        -> Zotero.Item（note）写入带页码/时间戳/源码/原生 KaTeX 预览的 HTML 块
+ *   Native image annotation (screenshot)
+ *        -> Zotero.Annotations.toJSON() reads the local image cache
+ *        -> Canvas scaling/normalization (main thread, images are tiny)
+ *        -> Web Worker + onnxruntime-web + INT8 ONNX inference
+ *        -> Pure-JS BPE decoding to LaTeX
+ *        -> Zotero.Item (note) receives an HTML block with page label,
+ *           timestamp, source, and a native KaTeX preview
  *
- * 重要设计说明（详见 README 与 docs）：
- * 1. Zotero 10 没有 Zotero.Notes.create() 这个 API。新建笔记使用
- *    new Zotero.Item("note") + setNote() + saveTx()。
- * 2. Zotero 10 的笔记编辑器原生支持 KaTeX 数学节点：
- *    块级公式写成 <pre class="math">$$...$$</pre>，
- *    行内公式写成 <span class="math">$...$</span>。
- *    因此不需要也不应该把 MathJax 的 <script> 塞进笔记。
- * 3. 输入使用 Zotero 自己的“区域图像注释”作为截图事件，
- *    这样页码、附件、注释 key 都由 Zotero 保证，避免自己解析 PDF 坐标。
- *    同时监听 Notifier，可在用户开启时自动处理新截图。
- * 4. 对 Zotero.Reader 的少数内部字段（_readers/_iframeWindow/_primaryView/
- *    _state.selectedAnnotationIDs）做了存在性保护；如果未来 Zotero 版本改变，
- *    菜单里的“识别选中的公式截图”仍能工作，只是不得不在 PDF 中重新选中注释。
+ * Key design notes (see README and docs):
+ * 1. Zotero 10 has no Zotero.Notes.create() API. Notes are created with
+ *    new Zotero.Item("note") + setNote() + saveTx().
+ * 2. The Zotero 10 note editor natively supports KaTeX math nodes:
+ *    block formulas use <pre class="math">$$...$$</pre>,
+ *    inline formulas use <span class="math">$...$</span>.
+ *    Injecting MathJax <script> into notes is unnecessary and undesirable.
+ * 3. Input uses Zotero's own "area image annotation" as the screenshot event,
+ *    so Zotero supplies the page label, attachment, and annotation key, and we
+ *    avoid parsing PDF coordinates ourselves.
+ *    A Notifier listener can auto-process new screenshots when enabled.
+ * 4. A few Zotero.Reader internals (_readers/_iframeWindow/_primaryView/
+ *    _state.selectedAnnotationIDs) are guarded for existence. If a future
+ *    Zotero version changes them, the "Recognize Selected Formula Screenshot"
+ *    menu item still works, but the annotation must be reselected in the PDF.
  */
 
 "use strict";
@@ -40,42 +43,45 @@ var TexLinkService = (function () {
   const WORKER_WARMUP_TIMEOUT = 120000;
   const NOTE_SCHEMA_VERSION = 9;
   const DEFAULT_LOG_TAG = "texlink-formula-log";
-  const DEFAULT_LOG_TITLE = "TexLink 公式摘录";
+  const DEFAULT_LOG_TITLE = "TexLink Formula Notes";
 
-  // 服务内部默认模板。prefs.js 中还有一份供用户修改的副本；
-  // 若用户模板被清空/破坏，回退到这里，确保核心字段不丢。
+  // Default template used internally by the service. prefs.js also keeps a
+  // user-editable copy; if that copy is cleared or broken, fall back here so
+  // essential fields are never lost.
   const DEFAULT_NOTE_TEMPLATE = [
     '<blockquote data-texlink-entry="{{id}}" data-texlink-annotation="{{annotationKey}}">',
-    '  <h3>TexLink 公式锚点</h3>',
+    '  <h3>TexLink formula anchor</h3>',
     '  <pre class="math">$${{latexRaw}}$$</pre>',
-    '  <p><strong>页码：</strong>{{pageLabel}}　<strong>提取时间：</strong>{{timestamp}}</p>',
-    '  <p><strong>来源：</strong>{{sourceTitle}} · <a href="{{pdfLink}}">在 PDF 中定位</a> · <a href="{{itemLink}}">查看文献条目</a></p>',
+    '  <p><strong>Page:</strong> {{pageLabel}} | <strong>Extracted:</strong> {{timestamp}}</p>',
+    '  <p><strong>Source:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">Open in PDF</a> | <a href="{{itemLink}}">View item</a></p>',
     '  {{commentBlock}}',
-    '  <p><strong>LaTeX 源码：</strong></p>',
+    '  <p><strong>LaTeX source:</strong></p>',
     '  <pre>{{latexRaw}}</pre>',
     '</blockquote>'
   ].join("\n");
 
   /**
-   * ByteLevel BPE 解码器。
+   * ByteLevel BPE decoder.
    *
-   * Pix2Text-MFR 的 tokenizer.json 是 HuggingFace tokenizers 的 BPE 结构：
+   * Pix2Text-MFR's tokenizer.json uses the HuggingFace tokenizers BPE layout:
    *   model.vocab: token -> id
    *   decoder.type: ByteLevel
    *
-   * ByteLevel 的关键不是简单的 token 拼接：GPT-2 风格的 token 字符串把字节
-   * 映射成了可打印 Unicode（例如空格 -> "Ġ"）。正确做法是：
-   *   1. 把每个 token 的每个字符映射回原始字节；
-   *   2. 把所有字节拼成一个连续 Uint8Array；
-   *   3. 最后整体做 UTF-8 解码。
+   * The point of ByteLevel is not simple token concatenation: GPT-2-style
+   * token strings map bytes to printable Unicode (e.g. space -> "Ġ"). The
+   * correct approach is:
+   *   1. Map every character of every token back to its original byte.
+   *   2. Concatenate all bytes into one contiguous Uint8Array.
+   *   3. Decode the whole buffer as UTF-8.
    *
-   * 不能对单个 token 分别做 UTF-8 解码：一个中文字符/数学符号可能被拆到
-   * 相邻 token 中，分别解码会产生替换字符 U+FFFD。
+   * Never UTF-8 decode individual tokens: a multi-byte character or math
+   * symbol may be split across adjacent tokens, and per-token decoding would
+   * produce U+FFFD replacement characters.
    */
   class TexLinkBPEDecoder {
     constructor(tokenizerJSON) {
       if (!tokenizerJSON || typeof tokenizerJSON !== "object") {
-        throw new Error("tokenizer.json 格式无效");
+        throw new Error("Invalid tokenizer.json format");
       }
       this._json = tokenizerJSON;
       this._vocab = tokenizerJSON.model?.vocab || {};
@@ -103,7 +109,7 @@ var TexLinkService = (function () {
       this._decoder = new TextDecoder("utf-8", { fatal: false });
     }
 
-    /** 构造 GPT-2 ByteLevel 的 Unicode 字符 -> 字节映射。 */
+    /** Build the GPT-2 ByteLevel Unicode character -> byte mapping. */
     _buildByteMap() {
       const bytes = [];
       for (let i = 33; i <= 126; i++) bytes.push(i);
@@ -127,7 +133,7 @@ var TexLinkService = (function () {
       return map;
     }
 
-    /** 递归识别 decoder 链中是否包含 ByteLevel。 */
+    /** Recursively detect whether the decoder chain contains ByteLevel. */
     _detectDecoderType(decoder) {
       if (!decoder) return "bytelevel";
       const type = String(decoder.type || "").toLowerCase();
@@ -145,7 +151,7 @@ var TexLinkService = (function () {
       return "bytelevel";
     }
 
-    /** 跳过特殊 token 并取出文本 token。 */
+    /** Skip special tokens and return the text tokens. */
     _tokenTexts(ids) {
       const texts = [];
       for (const rawId of ids || []) {
@@ -162,7 +168,7 @@ var TexLinkService = (function () {
     }
 
     /**
-     * ByteLevel 解码。
+     * ByteLevel decoding.
      * @param {number[]} ids
      * @returns {string}
      */
@@ -178,7 +184,7 @@ var TexLinkService = (function () {
 
       if (this._decoderType === "bytelevel") {
         for (const token of tokenTexts) {
-          // 兼容 tokenizer 中可能保留的字节回退标记 <0xAB>。
+          // Handle byte fallback markers such as <0xAB> that may remain in the tokenizer.
           if (/^<0x[0-9a-fA-F]{2}>$/.test(token)) {
             bytes.push(parseInt(token.slice(3, 5), 16));
             continue;
@@ -186,7 +192,7 @@ var TexLinkService = (function () {
           for (const ch of token) {
             const byte = this._byteMap.get(ch);
             if (byte === undefined) {
-              // 极少数 added token / 非 ByteLevel 字符：按 UTF-8 原样写回。
+              // Rare added token / non-ByteLevel character: write it back as UTF-8.
               pushUTF8(ch);
             }
             else {
@@ -197,8 +203,9 @@ var TexLinkService = (function () {
         return this._postProcess(this._decoder.decode(Uint8Array.from(bytes)));
       }
 
-      // SentencePiece / Metaspace / WordPiece 的常见情况：
-      // 目前不用于默认模型，但保留给 UniMERNet 等其它 tokenizer 作为扩展点。
+      // Common cases for SentencePiece / Metaspace / WordPiece:
+      // not used by the default model, but kept as an extension point for
+      // other tokenizers such as UniMERNet.
       for (const token of tokenTexts) {
         if (/^<0x[0-9a-fA-F]{2}>$/.test(token)) {
           bytes.push(parseInt(token.slice(3, 5), 16));
@@ -213,13 +220,14 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 只做确定性的、不会改变 LaTeX 语义的清理：
-     * - 去掉 BOM/控制字符；
-     * - 去掉模型偶尔输出的 Markdown 代码围栏；
-     * - 去掉整体包裹的 $ / $$（math 节点会自己加）；
-     * - 折叠换行与首尾空白。
+     * Apply only deterministic cleanup that cannot change LaTeX semantics:
+     * - strip BOM/control characters;
+     * - strip Markdown code fences the model occasionally emits;
+     * - strip outer $ / $$ wrappers (the math node adds its own);
+     * - collapse newlines and trim leading/trailing whitespace.
      *
-     * 不做“自动补全括号”“改写命令”等任何猜测性操作。
+     * No speculative operations such as "auto-close brackets" or
+     * "rewrite commands".
      */
     _postProcess(text) {
       let output = String(text || "")
@@ -228,7 +236,7 @@ var TexLinkService = (function () {
         .replace(/\r\n?/g, "\n")
         .trim();
 
-      // 防御性兼容：模型若返回 ```latex ... ```，只剥掉围栏。
+      // Defensive handling: if the model returns ```latex ... ```, strip only the fences.
       output = output
         .replace(/^```(?:latex|tex)?\s*/i, "")
         .replace(/\s*```$/i, "")
@@ -241,7 +249,8 @@ var TexLinkService = (function () {
         output = output.slice(1, -1).trim();
       }
 
-      // 仅把连续换行压缩成空格；不压缩普通空格，避免破坏 \text{...}。
+      // Collapse consecutive newlines into spaces only; leave ordinary spaces
+      // untouched so \text{...} is not corrupted.
       output = output.replace(/\n+/g, " ").trim();
       return output;
     }
@@ -250,7 +259,7 @@ var TexLinkService = (function () {
   class Service {
     constructor(options = {}) {
       this.id = options.id || PLUGIN_ID;
-      this.version = options.version || "0.1.2";
+      this.version = options.version || "0.1.3";
       this.rootURI = options.rootURI || "";
       this.chromeBase = options.chromeBase || `chrome://${CHROME_NAME}/content/`;
 
@@ -273,7 +282,7 @@ var TexLinkService = (function () {
       this._diagQueue = Promise.resolve();
       this._diagSeq = 0;
 
-      // 主窗口 -> 清理函数集合。用 Map 而不是 WeakMap，便于 shutdown 时遍历。
+      // Main window -> cleanup callbacks. A Map (not WeakMap) so shutdown can iterate.
       this._windowCleanups = new Map();
 
       // PDF iframe window -> { reader, handler }
@@ -288,13 +297,13 @@ var TexLinkService = (function () {
       this._autoQueue = Promise.resolve();
     }
 
-    // ===================== 生命周期 =====================
+    // ===================== Lifecycle =====================
 
     async startup() {
       if (this._started) return;
       this._started = true;
 
-      // 等待主窗口 UI 就绪；不等待会拿不到 Zotero.Reader、ZoteroContextPane。
+      // Wait for the main window UI; otherwise Zotero.Reader and ZoteroContextPane may be unavailable.
       await Zotero.uiReadyPromise;
 
       if (!this._getPref("enabled", true)) {
@@ -303,8 +312,9 @@ var TexLinkService = (function () {
       }
       this._diag("service-startup", `${this.id} ${this.version}`);
 
-      // 先加载模型元数据和 tokenizer。即使模型资源损坏，也不阻断安装/启动；
-      // 用户触发识别时再给出明确错误。
+      // Load model metadata and the tokenizer first. Even if model resources
+      // are damaged, installation/startup is not blocked; a clear error is
+      // shown when the user triggers recognition.
       try {
         this._modelConfig = await this._readJSON(
           `${this.chromeBase}models/texlink-model.json`
@@ -321,7 +331,7 @@ var TexLinkService = (function () {
         this._logError("Failed to load model metadata/tokenizer", error);
       }
 
-      // 只创建 Worker 壳子；真正的 ORT 和 ONNX 加载在 _ensureModelLoaded()。
+      // Create only the Worker shell; ORT and ONNX are actually loaded in _ensureModelLoaded().
       try {
         this._createWorker();
       }
@@ -333,19 +343,22 @@ var TexLinkService = (function () {
       this._registerReaderContextMenu();
       this._registerNotifier();
 
-      // 插件在已有窗口中启用时，Zotero 不一定会补发 onMainWindowLoad，
-      // 因此主动遍历一次；bootstrap 的窗口回调会去重。
+      // When the plugin is enabled in an existing window, Zotero may not send
+      // onMainWindowLoad again. Iterate proactively once; bootstrap's window
+      // callback deduplicates.
       for (const win of Zotero.getMainWindows()) {
         await this.onMainWindowLoad(win);
       }
 
-      // 低频兜底轮询：Zotero 10 没有公开的“reader 创建”回调，
-      // 这样即使没有触发某个内部事件，新打开的 PDF 也能绑定快捷键。
+      // Low-frequency fallback polling: Zotero 10 exposes no public
+      // "reader created" callback, so newly opened PDFs still get shortcuts
+      // even if an internal event is missed.
       this._readerPollTimer = setInterval(() => {
         if (!this._destroyed) this._bindAllReaders();
       }, 4000);
 
-      // 模型预热。默认开启：Worker 内加载 ORT/ONNX，不阻塞 UI。
+      // Model warmup. Enabled by default: ORT/ONNX load inside the Worker
+      // without blocking the UI.
       if (this._getPref("warmupOnStartup", true)) {
         this._warmupTimer = setTimeout(() => {
           this._warmupTimer = null;
@@ -373,7 +386,7 @@ var TexLinkService = (function () {
         }
       });
 
-      // 每次主窗口出现时尝试绑定一次已存在的 reader。
+      // Try to bind existing readers whenever a main window appears.
       this._bindAllReaders();
     }
 
@@ -429,8 +442,9 @@ var TexLinkService = (function () {
         this._readerContextMenuHandler = null;
       }
 
-      // 拒绝所有挂起请求，再终止 Worker，避免主线程有永远 pending 的 Promise。
-      const error = new Error("TexLink 已关闭");
+      // Reject all pending requests before terminating the Worker, so no
+      // Promise on the main thread stays pending forever.
+      const error = new Error("TexLink has been shut down");
       for (const pending of this._pending.values()) {
         clearTimeout(pending.timer);
         try { pending.reject(error); } catch (e) { /* noop */ }
@@ -448,7 +462,7 @@ var TexLinkService = (function () {
       this._activeProgress = null;
     }
 
-    // ===================== 首选项与日志 =====================
+    // ===================== Preferences and logging =====================
 
     _getPref(key, fallback) {
       try {
@@ -476,14 +490,16 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 诊断日志（0.1.2 crash 排查用）。
+     * Diagnostic log (used for crash investigation).
      *
-     * 崩溃发生在原生层时，Zotero 的调试输出往往来不及保存；这里把关键步骤
-     * 追加到临时目录的 texlink-crash.log，供下一次启动/开发者检查。
-     * 默认开启，可用 extensions.zotero.texlink.diagnosticLog=false 关闭。
+     * When a crash happens in native code, Zotero's debug output often never
+     * reaches disk. Key steps are appended to texlink-crash.log in the temp
+     * directory for the next startup or developer inspection.
+     * Disabled by default; enable with
+     * extensions.zotero.texlink.diagnosticLog=true.
      */
     _diag(step, detail = "") {
-      if (!this._getPref("diagnosticLog", true)) return Promise.resolve();
+      if (!this._getPref("diagnosticLog", false)) return Promise.resolve();
       this._diagQueue = this._diagQueue.then(async () => {
         try {
           const tempDir = (typeof PathUtils !== "undefined" && PathUtils.tempDir) || "/tmp";
@@ -494,7 +510,7 @@ var TexLinkService = (function () {
           try {
             existing = await IOUtils.readUTF8(path);
           }
-          catch (e) { /* 文件不存在 */ }
+          catch (e) { /* file does not exist */ }
           if (existing.length > 1024 * 1024) {
             existing = existing.slice(-256 * 1024);
           }
@@ -504,21 +520,21 @@ var TexLinkService = (function () {
           await IOUtils.writeUTF8(path, existing + line);
         }
         catch (e) {
-          // 诊断本身绝不能影响识别。
+          // Diagnostics must never affect recognition.
         }
       }).catch(() => {});
       return this._diagQueue;
     }
 
-    // ===================== 内部资源读取 =====================
+    // ===================== Internal resource loading =====================
 
     /**
-     * 读取 chrome:// 内部文本资源。优先 XHR，失败时回退 fetch。
-     * 不允许传入 http(s) URL —— 这是 TexLink 的离线硬约束。
+     * Read an internal chrome:// text resource. Prefer XHR, fall back to fetch.
+     * http(s) URLs are rejected: this is TexLink's hard offline constraint.
      */
     async _readText(url) {
       if (!String(url).startsWith("chrome://")) {
-        throw new Error(`拒绝读取非内部资源：${url}`);
+        throw new Error(`Refusing to read non-internal resource: ${url}`);
       }
       try {
         return await new Promise((resolve, reject) => {
@@ -528,12 +544,12 @@ var TexLinkService = (function () {
           xhr.onload = () => {
             const ok = (xhr.status >= 200 && xhr.status < 300) || xhr.status === 0;
             if (!ok) {
-              reject(new Error(`无法读取 ${url}（HTTP ${xhr.status}）`));
+              reject(new Error(`Failed to read ${url} (HTTP ${xhr.status})`));
               return;
             }
             resolve(String(xhr.responseText ?? xhr.response ?? ""));
           };
-          xhr.onerror = () => reject(new Error(`XHR 读取失败：${url}`));
+          xhr.onerror = () => reject(new Error(`XHR read failed: ${url}`));
           xhr.send(null);
         });
       }
@@ -545,7 +561,7 @@ var TexLinkService = (function () {
         }
         catch (fetchError) {
           throw new Error(
-            `无法读取内部资源 ${url}：${xhrError.message} / ${fetchError.message}`
+            `Failed to read internal resource ${url}: ${xhrError.message} / ${fetchError.message}`
           );
         }
       }
@@ -557,16 +573,16 @@ var TexLinkService = (function () {
         return JSON.parse(text);
       }
       catch (error) {
-        throw new Error(`JSON 解析失败 ${url}：${error.message}`);
+        throw new Error(`Failed to parse JSON at ${url}: ${error.message}`);
       }
     }
 
-    // ===================== Web Worker 通信 =====================
+    // ===================== Web Worker communication =====================
 
     _createWorker() {
       if (this._worker) return this._worker;
       if (!String(this.chromeBase).startsWith("chrome://")) {
-        throw new Error("chrome:// 资源映射未注册，无法启动推理 Worker");
+        throw new Error("chrome:// resource mapping is not registered; cannot start the inference Worker");
       }
       const workerURL = `${this.chromeBase}scripts/worker.js`;
       this._worker = new Worker(workerURL);
@@ -575,16 +591,16 @@ var TexLinkService = (function () {
         this._handleWorkerMessage(event.data || {});
       };
       this._worker.onerror = (event) => {
-        const message = event?.message || "Worker 脚本执行失败";
+        const message = event?.message || "Worker script execution failed";
         const error = new Error(message);
         this._modelError = this._modelError || error;
         this._modelReady = false;
         this._rejectAllPending(error);
         this._logError("Worker error", error);
-        this._setProgress(this._activeProgress, null, `推理线程错误：${message}`, true);
+        this._setProgress(this._activeProgress, null, `Inference Worker error: ${message}`, true);
       };
       this._worker.onmessageerror = () => {
-        const error = new Error("Worker 消息反序列化失败");
+        const error = new Error("Failed to deserialize Worker message");
         this._rejectAllPending(error);
         this._logError("Worker message error", error);
       };
@@ -600,14 +616,14 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 向 Worker 发一条带 requestId 的请求并等待对应响应。
+     * Send a request with a requestId to the Worker and await the matching response.
      *
-     * 通过 Transferable 把 Float32Array 的底层 ArrayBuffer 零拷贝转给 Worker；
-     * 主线程随后不应再访问该 buffer。
+     * The Float32Array's underlying ArrayBuffer is transferred zero-copy to the
+     * Worker; the main thread must not access that buffer afterwards.
      */
     _workerRequest(type, payload, transfer, timeoutMs = WORKER_RECOGNITION_TIMEOUT) {
       if (!this._worker) {
-        return Promise.reject(new Error("推理 Worker 未初始化"));
+        return Promise.reject(new Error("Inference Worker is not initialized"));
       }
       const requestId = ++this._requestSeq;
       return new Promise((resolve, reject) => {
@@ -615,7 +631,7 @@ var TexLinkService = (function () {
           const pending = this._pending.get(requestId);
           if (!pending) return;
           this._pending.delete(requestId);
-          reject(new Error(`Worker 请求超时：${type}`));
+          reject(new Error(`Worker request timed out: ${type}`));
         }, timeoutMs);
 
         this._pending.set(requestId, { resolve, reject, timer });
@@ -653,7 +669,7 @@ var TexLinkService = (function () {
         }
 
         case "error": {
-          const error = new Error(message.error?.message || "Worker 执行失败");
+          const error = new Error(message.error?.message || "Worker execution failed");
           error.stack = message.error?.stack || error.stack;
           const pending = this._pending.get(message.requestId);
           if (pending) {
@@ -681,20 +697,20 @@ var TexLinkService = (function () {
       if (message.phase === "decode" && message.maxNewTokens) {
         percent = Math.min(92, 60 + Math.round((message.step / message.maxNewTokens) * 32));
       }
-      this._setProgress(this._activeProgress, percent, message.text || "正在处理…");
+      this._setProgress(this._activeProgress, percent, message.text || "Processing…");
     }
 
     /**
-     * 确保 Worker 已加载 ORT 和两个 ONNX Session。
-     * 多次调用共享同一个 promise，避免重复加载 31MB 模型。
+     * Ensure the Worker has loaded ORT and both ONNX sessions.
+     * Concurrent calls share one promise to avoid loading the 31MB model twice.
      */
     async _ensureModelLoaded(progress) {
       if (this._modelReady) return;
       if (this._modelError) {
-        throw new Error(`模型加载失败：${this._modelError.message || this._modelError}`);
+        throw new Error(`Model load failed: ${this._modelError.message || this._modelError}`);
       }
       if (!this._modelConfig || !this._tokenizer) {
-        throw new Error("模型配置或 tokenizer 尚未加载");
+        throw new Error("Model configuration or tokenizer is not loaded yet");
       }
       if (!this._worker) this._createWorker();
 
@@ -730,7 +746,7 @@ var TexLinkService = (function () {
       await this._modelInitPromise;
     }
 
-    // ===================== 阅读器菜单 / 快捷键 / Notifier =====================
+    // ===================== Reader menu / shortcut / Notifier =====================
 
     _registerReaderContextMenu() {
       if (!Zotero.Reader?.registerEventListener) {
@@ -743,14 +759,15 @@ var TexLinkService = (function () {
           const items = this._annotationItemsFromReaderParams(reader, params?.ids || []);
           if (!items.length) return;
 
-          // 该 API 要求 append 同步执行；不要在 append 前 await。
+          // This API requires append to run synchronously; do not await before append.
           append({
             label: items.length > 1
-              ? `TexLink：识别 ${items.length} 个公式截图并写入笔记`
-              : "TexLink：识别公式并写入笔记",
+              ? `TexLink: Recognize ${items.length} Formula Screenshots and Add to Note`
+              : "TexLink: Recognize Formula and Add to Note",
             onCommand: () => {
-              // 关键：不要在这个原生/React 菜单的回调栈里打开新的 ProgressWindow。
-              // 先把控制权还给菜单，让菜单完全关闭，再开始异步识别。
+              // Important: do not open a new native progress window inside this
+              // native/React menu callback stack. Return control to the menu so
+              // it fully closes, then start async recognition.
               this._diag("reader-menu-command", items.map((x) => x.key).join(","));
               setTimeout(() => {
                 this._diag("reader-menu-deferred");
@@ -775,8 +792,8 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 从 Reader 的 context menu / selection 参数中解析出注释 item。
-     * params.ids 是 annotation item key（不是数据库 id）。
+     * Resolve annotation items from the Reader's context-menu / selection params.
+     * params.ids contains annotation item keys (not database ids).
      */
     _annotationItemsFromReaderParams(reader, ids) {
       const attachment = reader?._item;
@@ -801,7 +818,7 @@ var TexLinkService = (function () {
       return items;
     }
 
-    /** 获取当前选中的图片注释（用于快捷键 / Tools 菜单）。 */
+    /** Get the currently selected image annotations (for the shortcut / Tools menu). */
     _getSelectedImageAnnotations(reader) {
       if (!reader) return [];
       let ids = [];
@@ -815,7 +832,7 @@ var TexLinkService = (function () {
       let items = this._annotationItemsFromReaderParams(reader, ids);
       if (items.length) return items;
 
-      // 兼容：部分 reader 视图只暴露 getSelectedAnnotations()。
+      // Compatibility: some reader views only expose getSelectedAnnotations().
       try {
         const view = reader._internalReader?._primaryView;
         const selected = view?.getSelectedAnnotations?.();
@@ -847,7 +864,7 @@ var TexLinkService = (function () {
             this._log(`bind reader shortcut failed: ${error.message}`);
           });
         }
-        // 清理已经销毁的 iframe 引用。
+        // Clean up references to destroyed iframes.
         for (const [win, binding] of this._boundReaderWindows) {
           if (!win || win.closed) {
             this._boundReaderWindows.delete(win);
@@ -860,8 +877,9 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 把快捷键监听器挂到 reader 外层窗口和 PDF 内部 iframe。
-     * 之所以要挂两层：焦点通常在 PDF.js 的内层 iframe，事件不会冒泡到主窗口。
+     * Attach the shortcut listener to both the reader's outer window and the
+     * inner PDF iframe. Two layers are needed because focus usually lives in
+     * the PDF.js inner iframe and events do not bubble to the main window.
      */
     async _bindReaderShortcut(reader) {
       if (this._destroyed || !reader) return;
@@ -891,9 +909,10 @@ var TexLinkService = (function () {
         this._bindReaderWindow(win, reader);
       }
 
-      // PDF 视图可能比 reader 外壳晚初始化；仅对每个 reader 补两次。
-      // 注意：_bindAllReaders() 每 4 秒会调用本方法；如果不做一次性标记，
-      // 每次补绑都会再安排两个定时器，最终造成定时器数量指数增长。
+      // The PDF view may initialize after the reader shell; retry twice per reader.
+      // Note: _bindAllReaders() calls this method every 4 seconds. Without a
+      // one-time flag, each retry would schedule two more timers and their
+      // count would grow exponentially.
       if (!this._readerRetriesScheduled.has(reader)) {
         this._readerRetriesScheduled.add(reader);
         const retry = (delay) => {
@@ -960,7 +979,7 @@ var TexLinkService = (function () {
       event.preventDefault();
       event.stopPropagation();
       if (this._busy) {
-        this._showError(new Error("TexLink 正在处理上一条公式，请稍候。"), reader);
+        this._showError(new Error("TexLink is still processing the previous formula; please wait."), reader);
         return;
       }
       this.recognizeFromReader(reader).catch((error) => this._showError(error, reader));
@@ -979,9 +998,9 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 解析 extensions.zotero.texlink.shortcut。
-     * 支持 accel / ctrl / control / cmd / command / meta / alt / option / shift，
-     * 最后一项为按键（例如 L 或 KeyL）。
+     * Parse extensions.zotero.texlink.shortcut.
+     * Supports accel / ctrl / control / cmd / command / meta / alt / option / shift,
+     * with the final item being the key (e.g. L or KeyL).
      */
     _matchesShortcut(event) {
       if (!event || event.repeat) return false;
@@ -1026,8 +1045,8 @@ var TexLinkService = (function () {
       try {
         const win = Zotero.getMainWindow();
         const tabs = win?.Zotero_Tabs;
-        // 不硬依赖 selectedType：只要选中的 tab ID 能映射到 Reader，
-        // 就认为用户正在阅读 PDF。
+        // Do not hard-depend on selectedType: if the selected tab ID maps to a
+        // Reader, assume the user is reading a PDF.
         if (tabs?.selectedID) {
           return Zotero.Reader.getByTabID(tabs.selectedID) || null;
         }
@@ -1066,7 +1085,7 @@ var TexLinkService = (function () {
               }
               if (!annotations.length) return;
 
-              // 让 Zotero 先完成图片缓存落盘，再读取注释图片。
+              // Let Zotero finish writing the image cache before reading annotation images.
               this._autoQueue = this._autoQueue
                 .then(() => this._delay(600))
                 .then(() => this._recognizeAnnotationItems(annotations, null, null, { auto: true }))
@@ -1082,22 +1101,23 @@ var TexLinkService = (function () {
       }
     }
 
-    // ===================== 工具菜单 =====================
+    // ===================== Tools menu =====================
 
     /**
-     * 在 Tools 菜单末尾加一项。
+     * Append an item to the end of the Tools menu.
      *
-     * Zotero.MenuManager 是更“官方”的替代方案，但它只接受 l10nID（
-     * l10nID -> Fluent .label），而本 V0.1 采用中文硬编码、零 l10n 依赖。
-     * 这里直接操作 Zotero 自己的 XUL DOM，并在窗口卸载时精确移除，
-     * 不修改任何 Zotero 原有节点。
+     * Zotero.MenuManager is the more official alternative, but it only accepts
+     * l10nID (l10nID -> Fluent .label), while this plugin hardcodes English
+     * labels and has zero l10n dependencies. Here we operate directly on
+     * Zotero's own XUL DOM and remove only our nodes on window unload, without
+     * modifying any existing Zotero nodes.
      */
     _installToolsMenu(win, cleanups) {
       const doc = win?.document;
       const popup = doc?.getElementById("menu_ToolsPopup");
       if (!popup) return;
 
-      // 插件重载时可能残留旧节点，先移除。
+      // Old nodes may remain after a plugin reload; remove them first.
       doc.getElementById("texlink-tools-separator")?.remove();
       doc.getElementById("texlink-tools-menuitem")?.remove();
 
@@ -1106,10 +1126,10 @@ var TexLinkService = (function () {
 
       const menuitem = doc.createXULElement("menuitem");
       menuitem.id = "texlink-tools-menuitem";
-      menuitem.setAttribute("label", "TexLink：识别选中的公式截图");
+      menuitem.setAttribute("label", "TexLink: Recognize Selected Formula Screenshot");
       menuitem.setAttribute(
         "tooltiptext",
-        "先在 PDF 中用图像注释框选公式并选中，再点击这里或按快捷键。"
+        "First select a formula with the image annotation tool in the PDF, then click here or use the shortcut."
       );
 
       const handler = () => {
@@ -1131,13 +1151,13 @@ var TexLinkService = (function () {
       });
     }
 
-    // ===================== 用户触发入口 =====================
+    // ===================== User-triggered entry points =====================
 
     async recognizeFromActiveReader() {
       const reader = this._getActiveReader();
       if (!reader) {
         this._showError(new Error(
-          "请先打开一篇 PDF，并用图像注释工具框选公式。TexLink 不会读取剪贴板，也不会上传图片。"
+          "Open a PDF and select a formula with the image annotation tool first. TexLink does not read the clipboard or upload images."
         ), null);
         return [];
       }
@@ -1146,13 +1166,13 @@ var TexLinkService = (function () {
 
     async recognizeFromReader(reader) {
       if (this._busy) {
-        this._showError(new Error("TexLink 正在处理上一条公式，请稍候。"), reader);
+        this._showError(new Error("TexLink is still processing the previous formula; please wait."), reader);
         return [];
       }
       const items = this._getSelectedImageAnnotations(reader);
       if (!items.length) {
         this._showError(new Error(
-          "没有检测到选中的图像注释。请在 Zotero PDF 阅读器中选择“区域图像”工具，框选公式，再选中该截图后重试。"
+          "No image annotation is selected. Use the image annotation tool in the Zotero PDF reader to select the formula, then select that screenshot and try again."
         ), reader);
         return [];
       }
@@ -1160,11 +1180,11 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 识别一组图片注释，并把每条结果作为独立 blockquote 写入笔记。
+     * Recognize a set of image annotations and write each result as its own blockquote in the note.
      *
      * @param {Zotero.Item[]} annotationItems
      * @param {object|null} reader
-     * @param {string|null} comment 可选备注
+     * @param {string|null} comment Optional comment
      * @param {{auto?: boolean}} options
      */
     async _recognizeAnnotationItems(annotationItems, reader, comment = null, options = {}) {
@@ -1172,20 +1192,21 @@ var TexLinkService = (function () {
       if (!Array.isArray(annotationItems) || !annotationItems.length) return [];
       if (this._busy) {
         if (!options.auto) {
-          this._showError(new Error("TexLink 正在处理上一条公式，请稍候。"), reader);
+          this._showError(new Error("TexLink is still processing the previous formula; please wait."), reader);
         }
         return [];
       }
       if (!this._modelConfig || !this._tokenizer) {
-        this._showError(new Error("公式模型/tokenizer 未加载，无法识别。请重新安装完整的 TexLink.xpi。"), reader);
+        this._showError(new Error("Formula model/tokenizer is not loaded, so recognition is unavailable. Reinstall the complete TexLink.xpi."), reader);
         return [];
       }
 
       this._busy = true;
       await this._diag("pipeline-start", options.auto ? "auto" : "manual");
-      // 让调用来源（菜单/快捷键/Notifier）先完成当前事件，再开始任何 UI 更新。
+      // Let the event source (menu/shortcut/Notifier) finish its current event
+      // before any UI update.
       await this._delay(60);
-      const progress = this._newProgress("准备识别公式…", reader);
+      const progress = this._newProgress("Preparing to recognize formula…", reader);
       this._activeProgress = progress;
       const results = [];
       const failures = [];
@@ -1195,13 +1216,13 @@ var TexLinkService = (function () {
         if (!options.auto && this._getPref("promptForComment", false)) {
           effectiveComment = await this._promptComment();
           if (effectiveComment === null) {
-            this._setProgress(progress, 100, "已取消");
+            this._setProgress(progress, 100, "Canceled");
             this._closeProgress(progress, 1000);
             return [];
           }
         }
 
-        this._setProgress(progress, 12, "正在加载离线模型…");
+        this._setProgress(progress, 12, "Loading offline model…");
         await this._diag("model-load-start");
         await this._ensureModelLoaded(progress);
         await this._diag("model-load-end");
@@ -1213,7 +1234,7 @@ var TexLinkService = (function () {
             : "";
           try {
             await this._diag("annotation-start", item.key);
-            this._setProgress(progress, 60, `${prefix}正在读取截图并推理…`);
+            this._setProgress(progress, 60, `${prefix}Reading screenshot and running inference…`);
             const result = await this._recognizeSingle(item, reader, effectiveComment, progress, prefix);
             await this._diag("annotation-done", item.key);
             results.push(result);
@@ -1226,12 +1247,12 @@ var TexLinkService = (function () {
 
         if (results.length) {
           const failureText = failures.length
-            ? `，${failures.length} 条失败，详见 Zotero 调试输出`
+            ? `, ${failures.length} failed; see Zotero debug output`
             : "";
           this._setProgress(
             progress,
             100,
-            `已写入 ${results.length} 条公式到 Zotero 笔记${failureText}`
+            `Added ${results.length} formula entries to the Zotero note${failureText}`
           );
           this._closeProgress(progress, failures.length ? 10000 : 5000);
         }
@@ -1240,7 +1261,7 @@ var TexLinkService = (function () {
           this._setProgress(
             progress,
             null,
-            `识别失败：${first?.message || "未知错误"}`,
+            `Recognition failed: ${first?.message || "unknown error"}`,
             true
           );
           this._closeProgress(progress, 10000);
@@ -1249,7 +1270,7 @@ var TexLinkService = (function () {
       }
       catch (error) {
         await this._diag("pipeline-error", error.message || String(error));
-        this._setProgress(progress, null, `TexLink 失败：${error.message || error}`, true);
+        this._setProgress(progress, null, `TexLink failed: ${error.message || error}`, true);
         this._closeProgress(progress, 10000);
         this._logError("recognition pipeline failed", error);
         return results;
@@ -1260,7 +1281,7 @@ var TexLinkService = (function () {
       }
     }
 
-    // ===================== 单条识别 =====================
+    // ===================== Single-annotation recognition =====================
 
     async _recognizeSingle(annotationItem, reader, comment, progress, prefix = "") {
       await this._diag("single-start", annotationItem.key);
@@ -1270,14 +1291,14 @@ var TexLinkService = (function () {
       const image = await this._getAnnotationImage(annotationItem);
       await this._diag("image-read-done", image.length);
 
-      this._setProgress(progress, 64, `${prefix}正在预处理图像…`);
+      this._setProgress(progress, 64, `${prefix}Preprocessing image…`);
       await this._diag("preprocess-start");
       const tensor = await this._preprocessImage(image);
       await this._diag("preprocess-done", tensor.shape.join("x"));
 
-      this._setProgress(progress, 68, `${prefix}正在离线识别公式…`);
-      // _ensureModelLoaded 结束时会把 _activeProgress 置空；开始推理前重新挂上，
-      // 这样 Worker 的解码进度才能继续更新同一个进度窗口。
+      this._setProgress(progress, 68, `${prefix}Recognizing formula offline…`);
+      // _ensureModelLoaded clears _activeProgress when it finishes; reattach it
+      // before inference so Worker decode progress updates the same toast.
       this._activeProgress = progress;
       const maxNewTokens = Number(this._getPref("maxNewTokens", 384)) || 384;
       await this._diag("worker-request-start");
@@ -1294,7 +1315,7 @@ var TexLinkService = (function () {
 
       const latex = this._tokenizer.decode(workerResult.tokenIds || []);
       if (!latex) {
-        throw new Error("模型返回了空公式，请重新框选更清晰的公式图片");
+        throw new Error("The model returned an empty formula; select a clearer formula image and try again");
       }
 
       const timestamp = new Date().toISOString();
@@ -1308,7 +1329,7 @@ var TexLinkService = (function () {
         confidence: workerResult.confidence
       });
 
-      this._setProgress(progress, 92, `${prefix}正在写入 Zotero 笔记…`);
+      this._setProgress(progress, 92, `${prefix}Writing to Zotero note…`);
       await this._diag("note-write-start");
       const noteItem = await this._writeEntryToNote({
         html,
@@ -1340,12 +1361,13 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 读取原生图片注释的 PNG data URL。
-     * Zotero.Annotations.toJSON() 会把注释缓存图片编码为 data:image/png;base64。
+     * Read the PNG data URL of a native image annotation.
+     * Zotero.Annotations.toJSON() encodes the cached annotation image as
+     * data:image/png;base64.
      */
     async _getAnnotationImage(annotationItem) {
       if (!annotationItem?.isAnnotationSupportingImage?.()) {
-        throw new Error("该注释不是图像注释");
+        throw new Error("This annotation is not an image annotation");
       }
       let lastError = null;
       for (let attempt = 0; attempt < 12; attempt++) {
@@ -1358,24 +1380,24 @@ var TexLinkService = (function () {
         catch (error) {
           lastError = error;
         }
-        // 新截图的缓存文件可能比 Notifier 事件晚几十毫秒落盘。
+        // A new screenshot's cache file may land a few dozen milliseconds after the Notifier event.
         await this._delay(250);
       }
       throw new Error(
-        `无法读取该截图的本地缓存${lastError ? `：${lastError.message}` : ""}。请确认注释图片已同步/保存到本地。`
+        `Could not read the local cache for this screenshot${lastError ? `: ${lastError.message}` : ""}. Make sure the annotation image is synced/saved locally.`
       );
     }
 
     /**
-     * Canvas 预处理：
-     *   - 透明背景铺白；
-     *   - 缩放到模型要求的 384 × 384（与 DeiTImageProcessor 的 resize 对齐）；
-     *   - 可选 Otsu 二值化（默认关闭）；
-     *   - RGB 归一化：[0,1] 后用 mean=0.5,std=0.5 转为 [-1,1]；
-     *   - 排成 CHW float32。
+     * Canvas preprocessing:
+     *   - fill transparent backgrounds with white;
+     *   - resize to the model's 384 × 384 (matching DeiTImageProcessor resize);
+     *   - optional Otsu binarization (off by default);
+     *   - RGB normalization: scale to [0,1], then map to [-1,1] with mean=0.5,std=0.5;
+     *   - lay out as CHW float32.
      *
-     * 该函数在主线程执行，但只处理一张 384×384 小图，耗时毫秒级；
-     * 真正的重计算在 Worker 内。
+     * This runs on the main thread, but it only handles one 384×384 image and
+     * takes milliseconds; the real computation happens in the Worker.
      */
     async _preprocessImage(dataURL) {
       const input = this._modelConfig.input;
@@ -1387,33 +1409,34 @@ var TexLinkService = (function () {
 
       const win = Zotero.getMainWindow() || Services.appShell.hiddenDOMWindow;
       const doc = win?.document;
-      if (!doc) throw new Error("无法获得 Zotero 主窗口用于图像预处理");
+      if (!doc) throw new Error("Could not obtain the Zotero main window for image preprocessing");
 
       const image = await new Promise((resolve, reject) => {
         const img = new win.Image();
         img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error("无法解码注释图片"));
+        img.onerror = () => reject(new Error("Could not decode the annotation image"));
         img.src = dataURL;
       });
 
       if (!image.naturalWidth || !image.naturalHeight) {
-        throw new Error("注释图片尺寸为 0");
+        throw new Error("Annotation image has zero dimensions");
       }
 
       const canvas = doc.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (!ctx) throw new Error("无法创建 Canvas 2D 上下文");
+      if (!ctx) throw new Error("Could not create a Canvas 2D context");
 
-      // 透明背景必须铺白，否则透明像素会变成 [0,0,0]，模型会把空白当成墨迹。
+      // Transparent backgrounds must be filled white; otherwise transparent
+      // pixels become [0,0,0] and the model treats blank space as ink.
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, width, height);
       ctx.imageSmoothingEnabled = true;
       try {
         ctx.imageSmoothingQuality = "high";
       }
-      catch (error) { /* 某些平台不支持，忽略 */ }
+      catch (error) { /* not supported on some platforms; ignore */ }
       ctx.drawImage(image, 0, 0, width, height);
 
       const imageData = ctx.getImageData(0, 0, width, height).data;
@@ -1443,8 +1466,9 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 纯 JS Otsu 阈值二值化（默认不启用）。
-     * 只把灰度低于阈值的像素涂黑，其余涂白；alpha 设为 255。
+     * Pure-JS Otsu threshold binarization (disabled by default).
+     * Pixels whose grayscale is at or below the threshold become black; all
+     * others become white. Alpha is set to 255.
      */
     _otsuBinarizeInPlace(rgba) {
       const histogram = new Array(256).fill(0);
@@ -1491,22 +1515,22 @@ var TexLinkService = (function () {
       }
     }
 
-    // ===================== 笔记目标与写入 =====================
+    // ===================== Note target and writes =====================
 
     /**
-     * 从注释推导文献/附件/页码/可点击链接。
-     * 页码优先使用 annotationPageLabel（PDF 中可能显示为 "iv" 或 "12"）；
-     * 若为空，则回退到 position.pageIndex + 1（PDF 物理页码）。
+     * Derive the item/attachment/page label/clickable links from an annotation.
+     * Prefer annotationPageLabel (which may display as "iv" or "12" in the PDF);
+     * if empty, fall back to position.pageIndex + 1 (physical PDF page number).
      */
     _buildSourceContext(annotationItem, reader) {
       const attachment = annotationItem?.parentItem || reader?._item;
       if (!attachment) {
-        throw new Error("该注释没有关联的 PDF 附件");
+        throw new Error("This annotation has no associated PDF attachment");
       }
       const regularItem = attachment.parentItem || null;
       if (!regularItem) {
         throw new Error(
-          "该 PDF 没有父级文献条目。请先把 PDF 作为附件添加到文献条目下，TexLink 才能把公式锚定到文献笔记。"
+          "This PDF has no parent item. Add the PDF as an attachment under a bibliographic item first so TexLink can anchor formulas to that item's note."
         );
       }
 
@@ -1524,7 +1548,7 @@ var TexLinkService = (function () {
         ? Number(position.pageIndex)
         : 0;
       const rawLabel = String(annotationItem.annotationPageLabel || "").trim();
-      const pageLabel = rawLabel || `PDF 第 ${pageIndex + 1} 页`;
+      const pageLabel = rawLabel || `PDF page ${pageIndex + 1}`;
 
       const library = Zotero.Libraries.get(annotationItem.libraryID);
       const isGroup = library?.libraryType === "group";
@@ -1532,7 +1556,7 @@ var TexLinkService = (function () {
       const pdfLink = `zotero://open-pdf/${prefix}/items/${attachment.key}` +
         `?page=${pageIndex + 1}&annotation=${annotationItem.key}`;
       const itemLink = `zotero://select/${prefix}/items/${regularItem.key}`;
-      const sourceTitle = regularItem.getField("title") || attachment.getField("title") || "未命名文献";
+      const sourceTitle = regularItem.getField("title") || attachment.getField("title") || "Untitled item";
 
       return {
         attachment,
@@ -1557,9 +1581,10 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 渲染一条独立公式块。
-     * 注意 <pre class="math"> 是 Zotero 10 笔记编辑器的原生数学节点语法，
-     * 会由内置 KaTeX 渲染；下面相同 LaTeX 又放入普通 <pre> 作为可搜索源码。
+     * Render one standalone formula block.
+     * Note that <pre class="math"> is the native math-node syntax of the
+     * Zotero 10 note editor and is rendered by its built-in KaTeX; the same
+     * LaTeX is also placed in a plain <pre> below as searchable source.
      */
     _renderEntryHTML({ latex, timestamp, entryId, source, comment }) {
       let template = String(this._getPref("noteTemplate", "") || "").trim();
@@ -1574,7 +1599,7 @@ var TexLinkService = (function () {
 
       const escapedLatex = this._escapeHTML(latex);
       const commentBlock = comment
-        ? `<p><strong>备注：</strong>${this._escapeHTML(comment)}</p>`
+        ? `<p><strong>Comment:</strong> ${this._escapeHTML(comment)}</p>`
         : "";
 
       const values = {
@@ -1595,20 +1620,22 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 解析笔记落点：
-     * - auto: 当前打开的、属于同一文献的笔记优先；否则专用子笔记；
-     * - active: 同 auto，但若当前没有同一文献的笔记，回退专用子笔记；
-     * - dedicated: 总是专用子笔记。
+     * Resolve where the note write should go:
+     * - auto: prefer the currently open note belonging to the same item; otherwise the dedicated child note;
+     * - active: same as auto, but fall back to the dedicated child note if no note for this item is open;
+     * - dedicated: always the dedicated child note.
      *
-     * 同时找出目标笔记是否已在某个 note editor 中打开。若已打开，
-     * 不能直接用 item.setNote 覆盖（会丢掉编辑器里尚未保存的输入），
-     * 而应该通过编辑器内部 insertHTML 动作插入。
+     * Also determine whether the target note is already open in a note editor.
+     * If it is, do not overwrite it with item.setNote (that would lose unsaved
+     * editor input); insert through the editor's internal insertHTML action
+     * instead.
      */
     async _resolveNoteTarget(sourceItem, preferredNote) {
       const mode = String(this._getPref("noteTarget", "auto"));
       if (mode !== "dedicated" && !preferredNote) {
         const active = this._findActiveEditorForSource(sourceItem);
-        // 只读笔记（例如组库同步的只读笔记）不能写；自动回退到专用子笔记。
+        // Read-only notes (e.g. synced read-only notes in group libraries)
+        // cannot be written; fall back automatically to the dedicated child note.
         if (active && active.noteItem?.isEditable?.()) {
           return { noteItem: active.noteItem, editorInstance: active.editorInstance, active: true };
         }
@@ -1624,7 +1651,7 @@ var TexLinkService = (function () {
         const win = Zotero.getMainWindow();
         if (!win) return null;
 
-        // 1) 右侧上下文面板中的当前笔记编辑器
+        // 1) The current note editor in the right-side context pane
         const contextNoteEditor = win.ZoteroContextPane?.activeEditor;
         const contextInstance = contextNoteEditor?.getCurrentInstance?.();
         if (this._isNoteOfItem(contextInstance, sourceItem)) {
@@ -1634,8 +1661,9 @@ var TexLinkService = (function () {
           };
         }
 
-        // 2) 笔记标签页 / 独立笔记窗口。Zotero.Notes._editorInstances 是内部数组，
-        //    这里只读且做完整保护；若未来重命名，自动退回 dedicated 模式。
+        // 2) Note tabs / standalone note windows. Zotero.Notes._editorInstances
+        //    is an internal array; read it defensively, and if it is renamed in
+        //    a future version, fall back to dedicated mode automatically.
         const instances = Zotero.Notes?._editorInstances || [];
         for (const instance of instances) {
           if (!this._isNoteOfItem(instance, sourceItem)) continue;
@@ -1679,13 +1707,13 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 查找或创建本条目专属的“TexLink 公式摘录”子笔记。
-     * 用标签定位，而不是依赖用户可能修改的标题。
+     * Find or create the dedicated "TexLink Formula Notes" child note for this item.
+     * Locate it by tag rather than by title, which the user may change.
      */
     async _findOrCreateLogNote(sourceItem) {
       const library = Zotero.Libraries.get(sourceItem.libraryID);
       if (!library?.editable) {
-        throw new Error("当前文献所在库为只读库，无法创建或修改笔记");
+        throw new Error("The library containing this item is read-only; cannot create or modify notes");
       }
 
       const tag = String(this._getPref("logNoteTag", DEFAULT_LOG_TAG) || DEFAULT_LOG_TAG);
@@ -1704,14 +1732,14 @@ var TexLinkService = (function () {
       note.libraryID = sourceItem.libraryID;
       note.parentID = sourceItem.id;
       /*
-       * 这里直接采用 Zotero 10 的内部 schema 容器。
-       * 块级数学节点语法是 <pre class="math">$$...$$</pre>。
-       * 不写 <script>、不依赖外部样式，Zotero 笔记编辑器会原生解析。
+       * Use Zotero 10's internal schema container directly.
+       * Block math nodes use <pre class="math">$$...$$</pre>.
+       * No <script> and no external styles; the Zotero note editor parses it natively.
        */
       note.setNote(
         `<div data-schema-version="${NOTE_SCHEMA_VERSION}">` +
         `<h2>${this._escapeHTML(title)}</h2>` +
-        `<p>本笔记由 TexLink 自动创建。每个公式块都包含本地 KaTeX 预览、LaTeX 源码、页码与 ISO 时间戳。</p>` +
+        `<p>This note was created automatically by TexLink. Each formula block contains a local KaTeX preview, LaTeX source, page label, and ISO timestamp.</p>` +
         `</div>`
       );
       note.setTags([{ tag }]);
@@ -1721,25 +1749,27 @@ var TexLinkService = (function () {
     }
 
     /**
-     * 写入一条公式块。
+     * Write one formula block.
      *
-     * 两种路径：
-     * A. 笔记已在编辑器中打开：通过编辑器内部消息 insertHTML 插入，避免
-     *    覆盖尚未落盘的编辑内容。改动作会由编辑器自身在约 1 秒后保存。
-     * B. 笔记未打开：直接 item.setNote + saveTx。
+     * Two paths:
+     * A. The note is already open in an editor: insert through the editor's
+     *    internal insertHTML message so unsaved edits are not overwritten. The
+     *    editor saves the change itself about one second later.
+     * B. The note is not open: call item.setNote + saveTx directly.
      */
     async _writeEntryToNote({ html, entryId, source, timestamp, latex }) {
       const target = await this._resolveNoteTarget(source.regularItem);
       const noteItem = target.noteItem;
       if (!noteItem?.isEditable?.()) {
-        throw new Error("目标笔记不可编辑（可能位于只读库或回收站）");
+        throw new Error("Target note is not editable (it may be in a read-only library or the trash)");
       }
 
       await this._diag("write-target", target.editorInstance ? "live-editor" : "item-save");
       if (target.editorInstance && !target.editorInstance._readOnly) {
         const inserted = this._insertIntoOpenEditor(target.editorInstance, html);
         if (inserted) {
-          // 编辑器约 1 秒自动保存。最多等 4 秒，确认笔记条目中出现了本次时间戳。
+          // The editor autosaves after about 1s. Wait up to 4s for this
+          // timestamp to appear in the note item.
           const saved = await this._waitForNoteText(noteItem, timestamp, 4000);
           if (!saved) {
             this._log("note editor did not persist within timeout; forcing saveSync");
@@ -1759,8 +1789,8 @@ var TexLinkService = (function () {
     _insertIntoOpenEditor(editorInstance, html) {
       try {
         if (!editorInstance?._postMessage || !editorInstance._iframeWindow) return false;
-        // 与 Zotero.EditorInstance.insertAnnotations() 内部使用的协议一致：
-        // insertHTML 会由 ProseMirror 解析并合入当前文档。
+        // Matches the protocol used internally by Zotero.EditorInstance.insertAnnotations():
+        // ProseMirror parses the insertHTML action and merges it into the document.
         editorInstance._postMessage({
           action: "insertHTML",
           pos: null,
@@ -1795,7 +1825,7 @@ var TexLinkService = (function () {
         noteRoot ||
         doc.body;
 
-      // insertAdjacentHTML 会按 HTML 规则解析 blockquote/pre.math；不需手动构建节点。
+      // insertAdjacentHTML parses blockquote/pre.math per HTML rules; no manual node building needed.
       contentRoot.insertAdjacentHTML("beforeend", html);
 
       const next = noteRoot ? noteRoot.outerHTML : doc.body.innerHTML;
@@ -1803,15 +1833,16 @@ var TexLinkService = (function () {
       await noteItem.saveTx({ skipSelect: true });
     }
 
-    // ===================== Reader 内浮层提示（不打开新窗口） =====================
+    // ===================== Reader toast (no new windows) =====================
 
     /**
-     * 在 Reader 外层 HTML 文档中显示一个轻量 toast。
+     * Show a lightweight toast in the Reader's outer HTML document.
      *
-     * 0.1.2 特意不再从 PDF 区域右键命令中打开 Zotero.ProgressWindow：
-     * macOS 上“原生/React 菜单回调 -> 立即 openDialog”存在窗口重入风险，
-     * 实测表现为选择菜单项后 Zotero 主进程 SIGSEGV。Toast 只是 Reader
-     * 文档里的一个 fixed div，不会触发新的原生窗口。
+     * This deliberately avoids opening a native Zotero progress window from PDF
+     * area context-menu commands: on macOS, "native/React menu callback ->
+     * immediate openDialog" has a window-reentrancy risk that was observed as a
+     * SIGSEGV in the main Zotero process after choosing a menu item. The toast
+     * is just a fixed div in the Reader document and never opens a native window.
      */
     _newProgress(text, reader) {
       try {
@@ -1897,7 +1928,7 @@ var TexLinkService = (function () {
     }
 
     _showError(error, reader = null) {
-      const message = String(error?.message || error || "未知错误");
+      const message = String(error?.message || error || "Unknown error");
       this._logError("user-visible error", error);
       this._diag("show-error", message);
       const progress = this._newProgress(message, reader);
@@ -1912,8 +1943,8 @@ var TexLinkService = (function () {
         const value = { value: "" };
         const accepted = Services.prompt.prompt(
           win,
-          "TexLink 备注",
-          "可选备注（留空则不写入；点击取消将放弃本次识别）：",
+          "TexLink Comment",
+          "Optional comment (leave blank to skip; Cancel aborts this recognition):",
           value,
           null,
           {}
@@ -1928,7 +1959,7 @@ var TexLinkService = (function () {
     }
   }
 
-  // 暴露给构建期/调试期测试使用；运行期逻辑不依赖该属性。
+  // Exposed for build-time/debug-time tests; runtime logic does not depend on it.
   Service.BPEDecoder = TexLinkBPEDecoder;
 
   return Service;
