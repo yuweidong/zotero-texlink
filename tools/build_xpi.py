@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""构建可双击安装的 TexLink .xpi。
+"""Build a double-clickable TexLink .xpi.
 
-Zotero Bootstrap 插件的 XPI 就是一个 ZIP 文件，manifest.json、
-bootstrap.js、prefs.js 必须位于 ZIP 根目录。ONNX、WASM、tokenizer
-全部随包携带，运行期没有任何网络依赖。
+A Zotero bootstrap plugin XPI is a ZIP archive. manifest.json, bootstrap.js,
+and prefs.js must be at the archive root. The ONNX models, WASM runtime, and
+tokenizer are bundled; the runtime has no network dependency.
 
-用法：
+Usage:
     python3 tools/verify_assets.py
     python3 tools/build_xpi.py
 """
@@ -79,19 +79,20 @@ def main() -> None:
     present = {rel for _, rel in files}
     missing = required - present
     if missing:
-        raise SystemExit("XPI 缺少必要文件：" + ", ".join(sorted(missing)))
+        raise SystemExit("Missing required XPI files: " + ", ".join(sorted(missing)))
 
-    # 不允许目录穿越；所有文件必须位于项目根目录下。
+    # Reject path traversal: every file must stay under the project root.
     for path, rel in files:
         path.resolve().relative_to(ROOT.resolve())
 
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        # manifest.json 放第一个，便于人工排查 ZIP 结构。
+        # Keep manifest.json first so the archive layout is easy to inspect.
         manifest_entry = next(item for item in files if item[1] == "manifest.json")
         zf.write(manifest_entry[0], manifest_entry[1])
 
-        # 一些老式 ZIP 读取器/AddonManager 更习惯显式的目录条目；
-        # 虽然目录条目不是 Zotero 的硬性要求，但加上能提升兼容性。
+        # Some older ZIP readers and AddonManager versions expect explicit
+        # directory entries. They are not required by Zotero, but they improve
+        # compatibility.
         directories = set()
         for _, rel in files:
             parent = pathlib.PurePosixPath(rel).parent
@@ -100,7 +101,7 @@ def main() -> None:
                 parent = parent.parent
         directories = sorted(directories)
         for directory in directories:
-            # 固定目录条目时间，保证同一份源码重复构建得到相同 SHA256。
+            # Fixed timestamps make repeated builds of the same tree hashable.
             info = zipfile.ZipInfo(directory + "/", date_time=(2026, 1, 1, 0, 0, 0))
             info.external_attr = (0o40755 << 16) | 0x10
             info.compress_type = zipfile.ZIP_STORED
@@ -116,9 +117,9 @@ def main() -> None:
     (DIST / f"zotero-texlink-{version}.xpi.sha256").write_text(
         f"{digest}  {output.name}\n", encoding="utf-8"
     )
-    print(f"[OK] 已生成 {output.relative_to(ROOT)} ({size_mb:.1f} MiB)")
+    print(f"[OK] Built {output.relative_to(ROOT)} ({size_mb:.1f} MiB)")
     print(f"     SHA256 {digest}")
-    print("     安装：Zotero 10 -> 工具 -> 插件 -> 齿轮 -> 从文件安装插件")
+    print("     Install: Zotero 10 -> Tools -> Add-ons -> gear -> Install Add-on From File...")
 
 
 if __name__ == "__main__":
