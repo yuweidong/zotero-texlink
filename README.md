@@ -1,4 +1,4 @@
-# TexLink
+# Zotero-TexLink
 
 **A Zotero-native structured formula knowledge anchor.**
 
