@@ -1,76 +1,92 @@
 /*
- * TexLink 默认首选项。
+ * TexLink default preferences.
  *
- * Zotero 在插件启动时会把本文件当作脚本执行，并提供全局 `pref(name, value)`。
- * 这里写入的都是“默认值”：用户或其它插件通过 Zotero.Prefs.set() 写入的值优先。
- * 所有运行期代码都通过 extensions.zotero.texlink.* 读取这些配置。
+ * Zotero executes this file at plugin startup and provides a global
+ * pref(name, value) function. Values written here are defaults; anything set
+ * by the user or another plugin through Zotero.Prefs.set() takes precedence.
+ * Runtime code always reads through extensions.zotero.texlink.*.
  */
 
-// 公式笔记记录的默认 HTML 模板。占位符由 texlink-service.js 替换。
-// 注意：
-// 1. Zotero 10 的笔记编辑器原生使用 KaTeX 渲染数学节点；
-//    块级公式约定为 <pre class="math">$$...$$</pre>，行内为 <span class="math">$...$</span>。
-// 2. 不要把 {{latexRaw}} 放进 HTML 属性；它会被 HTML 转义后写入 math 节点。
-// 3. 高级用户可修改；若模板缺少 {{latexRaw}}，插件会回退到内置模板。
+// Default HTML template for one formula record. Placeholders are replaced by
+// texlink-service.js.
+//
+// Notes:
+// 1. The Zotero 10 note editor renders native KaTeX math nodes. Block math is
+//    represented as <pre class="math">$$...$$</pre>; inline math uses
+//    <span class="math">$...$</span>.
+// 2. Never place {{latexRaw}} inside an HTML attribute. It is HTML-escaped
+//    before being written into the math node.
+// 3. Advanced users may customize this template. If {{latexRaw}} or
+//    {{pageLabel}} is missing, TexLink falls back to its internal template.
 const TEXLINK_DEFAULT_NOTE_TEMPLATE = [
   '<blockquote data-texlink-entry="{{id}}" data-texlink-annotation="{{annotationKey}}">',
-  '  <h3>TexLink 公式锚点</h3>',
+  '  <h3>TexLink formula anchor</h3>',
   '  <pre class="math">$${{latexRaw}}$$</pre>',
-  '  <p><strong>页码：</strong>{{pageLabel}}　<strong>提取时间：</strong>{{timestamp}}</p>',
-  '  <p><strong>来源：</strong>{{sourceTitle}} · <a href="{{pdfLink}}">在 PDF 中定位</a> · <a href="{{itemLink}}">查看文献条目</a></p>',
+  '  <p><strong>Page:</strong> {{pageLabel}} | <strong>Extracted:</strong> {{timestamp}}</p>',
+  '  <p><strong>Source:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">Open in PDF</a> | <a href="{{itemLink}}">View item</a></p>',
   '  {{commentBlock}}',
-  '  <p><strong>LaTeX 源码：</strong></p>',
+  '  <p><strong>LaTeX source:</strong></p>',
   '  <pre>{{latexRaw}}</pre>',
   '</blockquote>'
 ].join('\n');
 
-// 总开关。关闭后仍保留已写入的笔记，但不再注册菜单/快捷键/自动监听。
+// Master switch. Existing notes are left untouched when disabled, but TexLink
+// stops registering menus, shortcuts, and the automatic screenshot listener.
 pref('extensions.zotero.texlink.enabled', true);
 
-// 是否在 Zotero 启动后后台加载并预热 ONNX 模型。
-// 预热在 Web Worker 中进行，不阻塞主线程；关闭后第一次识别会多花几秒。
+// Load and warm up the ONNX model in the background after Zotero starts.
+// Warmup runs inside a Web Worker and never blocks the main thread. When this
+// is off, the first recognition request takes a few seconds longer.
 pref('extensions.zotero.texlink.warmupOnStartup', true);
 
-// 解码阶段最多生成多少个 token。Pix2Text-MFR 的模型上限是 512，V0.1 默认 384。
+// Maximum number of generated tokens. Pix2Text-MFR supports up to 512.
 pref('extensions.zotero.texlink.maxNewTokens', 384);
 
-// 笔记落点：
-//   auto      = 若当前打开的笔记属于同一文献则追加；否则使用“TexLink 公式摘录”专用子笔记
-//   active    = 只尝试当前打开的笔记，找不到时回退到专用子笔记
-//   dedicated = 总是写入该文献的专用子笔记
+// Where formula blocks are written:
+//   auto      - append to the open note if it belongs to the same item;
+//               otherwise use the dedicated log note, creating it if needed
+//   active    - prefer the open note and fall back to the dedicated log note
+//   dedicated - always use the dedicated log note
 pref('extensions.zotero.texlink.noteTarget', 'auto');
 
-// 专用子笔记的标签。用于在多次提取之间稳定找到同一篇笔记；用户不要随意删除该标签。
+// Tag used to find the dedicated note across multiple extractions. Do not
+// remove this tag manually unless you intend to create a new note.
 pref('extensions.zotero.texlink.logNoteTag', 'texlink-formula-log');
 
-// 专用子笔记的标题（写入 HTML 的第一个 h2，并由 Zotero 自动生成笔记标题）。
-pref('extensions.zotero.texlink.logNoteTitle', 'TexLink 公式摘录');
+// Title for a newly created dedicated note. Zotero derives the note title from
+// the first heading in the HTML.
+pref('extensions.zotero.texlink.logNoteTitle', 'TexLink Formula Notes');
 
-// 写入后是否自动在新标签页打开笔记。默认 false，避免打断阅读。
+// Open the destination note in a new tab after writing. Disabled by default
+// so recognition does not interrupt reading.
 pref('extensions.zotero.texlink.openNoteAfterInsert', false);
 
-// 识别后是否弹出一个可选的备注输入框（使用 Zotero 主窗口的 nsIPromptService）。
+// Show an optional comment prompt before recognition. Uses the Zotero main
+// window's nsIPromptService.
 pref('extensions.zotero.texlink.promptForComment', false);
 
-// 是否监听新创建的原生图片注释（截图），并自动识别。默认关闭，避免把示意图误当公式。
+// Listen for newly created native image annotations and process them
+// automatically. Disabled by default to avoid treating diagrams as formulas.
 pref('extensions.zotero.texlink.autoProcessNewScreenshots', false);
 
-// 快捷键。逗号分隔，accel = macOS 的 Cmd / 其它平台 Ctrl。
+// Keyboard shortcut. Comma-separated; accel is Cmd on macOS and Ctrl elsewhere.
 pref('extensions.zotero.texlink.shortcut', 'accel,shift,L');
 
-// 是否在预处理时对图像做 Otsu 二值化。默认关闭：
-// Pix2Text-MFR 使用 DeiT 图像处理器，在自然灰度图上训练，强行二值化通常反而降低准确率。
+// Apply Otsu binarization during image preprocessing. Disabled by default:
+// Pix2Text-MFR uses a DeiT image processor trained on natural grayscale
+// images, so aggressive binarization usually reduces accuracy.
 pref('extensions.zotero.texlink.binarize', false);
 
-// 记录在公式块中的备注最大长度。
+// Maximum length of the optional comment stored in a formula block.
 pref('extensions.zotero.texlink.maxCommentLength', 2000);
 
-// 调试日志。开启后会向 Zotero 调试输出写入更详细的 Worker 往返信息。
+// Write detailed Worker round-trip information to the Zotero debug output.
 pref('extensions.zotero.texlink.debug', false);
 
-// 0.1.2 崩溃诊断日志：把识别阶段追加到系统临时目录的 texlink-crash.log。
-// 发生崩溃时该文件会保留，便于定位最后一个成功步骤。稳定版本会默认关闭。
-pref('extensions.zotero.texlink.diagnosticLog', true);
+// Write recognition-stage breadcrumbs to a texlink-crash.log file in the
+// system temporary directory. Useful when diagnosing a native crash; keep it
+// off during normal use.
+pref('extensions.zotero.texlink.diagnosticLog', false);
 
-// 公式笔记 HTML 模板（见文件顶部说明）。
+// HTML template used for each formula block. See the notes above.
 pref('extensions.zotero.texlink.noteTemplate', TEXLINK_DEFAULT_NOTE_TEMPLATE);
