@@ -3,6 +3,7 @@
   "name": "TexLink",
   "version": "0.1.3",
   "description": "Offline formula recognition and Zotero note anchoring. Turn PDF formula screenshots into LaTeX and write traceable formula blocks into literature notes.",
+  "homepage_url": "https://github.com/yuweidong/zotero-texlink",
   "author": "Weidong Yu",
   "icons": {
     "48": "chrome/content/icons/texlink-48.png",
