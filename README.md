@@ -7,10 +7,11 @@ permanent, traceable formula block into the literature note. The result is not a
 clipboard string and not a chat transcript: the formula lives where the reading
 happened, with its page, timestamp, source item, and a native math preview.
 
-Everything runs inside Zotero. There is no Python service, no cloud API, no
-external network request, and no LLM in the recognition path. The complete
-deliverable is one `.xpi` containing the model, tokenizer, WASM runtime, and
-plugin code.
+The recognition path runs entirely inside Zotero: no Python service, no cloud
+API, no external recognition call, and no LLM. The complete deliverable is one
+`.xpi` containing the model, tokenizer, WASM runtime, and plugin code. The only
+external request is Zotero's standard add-on update check, which never sees
+screenshots, formulas, notes, or library data.
 
 ## Why TexLink
 
@@ -25,7 +26,7 @@ model and ends at a durable note block.
 | Cloud OCR or LLM call | Fully offline ONNX inference with deterministic greedy decoding |
 | Python/FastAPI/Node backend | No service process and no runtime installation |
 | One generic "OCR result" | One independent, timestamped, source-linked record per extraction |
-| Network required | Model, tokenizer, WASM, and ORT all loaded from `chrome://zotero-texlink/content/` |
+| Network required | None for recognition; only Zotero's standard add-on update check is external |
 
 ### The differences that matter
 
@@ -45,9 +46,11 @@ model and ends at a durable note block.
   math nodes (`<pre class="math">$$...$$</pre>` and
   `<span class="math">$...$</span>`). TexLink emits that native format, so
   previews survive note editing and sync and the source remains searchable.
-- **Offline by construction.** No external HTTP client, no remote model, no
-  telemetry, no LLM/VLM. The manifest contains a Zotero-required HTTPS
-  `update_url` placeholder, but the plugin never requests it at runtime.
+- **Offline by construction.** No recognition HTTP client, no remote model, no
+  telemetry, no LLM/VLM. Model, tokenizer, WASM, and ORT all load from
+  `chrome://zotero-texlink/content/`. Auto-update checks are performed by
+  Zotero's Add-on Manager through the HTTPS `update_url`, not by TexLink's
+  recognition code.
 - **Deterministic recognition.** Pix2Text-MFR with greedy decoding produces
   the same output for the same input. TexLink does not "clean up" formulas with
   generative guesses.
@@ -169,12 +172,24 @@ official-model conversion and INT8 quantization commands.
 ## Install
 
 1. Open Zotero 10.
-2. Download the `.xpi` file from the [Releases page]
-3. Go to **Tools → Add-ons → gear menu → Install Add-on From File…**, then select the downloaded `.xpi`.
+2. Download the `.xpi` file from the
+   [Releases page](https://github.com/yuweidong/zotero-texlink/releases).
+3. Go to **Tools → Add-ons → gear menu → Install Add-on From File…**, then
+   select the downloaded `.xpi`.
 4. Restart Zotero, or disable and re-enable TexLink in the Add-ons Manager.
 
 The XPI is about 25 MiB. On first use, Zotero compiles the WASM runtime and
 loads two ONNX sessions in the Worker; later recognitions are much faster.
+
+### Automatic updates
+
+TexLink uses Zotero's built-in add-on updater. The installed manifest points to
+an HTTPS update document with an `updates` array; Zotero checks it periodically
+and can install newer releases without manual downloads. The update manifest is
+hosted separately from the XPI and never participates in OCR.
+
+For the release and hosting workflow, see
+[docs/UPDATES.md](docs/UPDATES.md).
 
 ## Preferences
 
@@ -204,8 +219,8 @@ All preferences live under `extensions.zotero.texlink.*`.
 - Recognition quality depends on screenshot resolution and contrast; very small
   or blurry selections may be misread.
 - A formula must be attached to a PDF item that has a regular parent item.
-- The plugin is intentionally offline. It will not fall back to a cloud OCR
-  service.
+- Recognition is intentionally offline. It will not fall back to a cloud OCR
+  service; only Zotero's built-in add-on update check uses the network.
 - The bundled model is optimized for formulas, not for general handwriting or
   diagrams.
 
@@ -218,11 +233,16 @@ python3 tools/verify_assets.py
 # Run the pure-JS BPE decoder test with the bundled fixture
 node tests/tokenizer_decode.test.js
 
+# Add the current manifest version to updates.json
+python3 tools/update_manifest.py
+
 # Build a deterministic XPI
 python3 tools/build_xpi.py
 ```
 
 Packaging details: [docs/PACKAGING.md](docs/PACKAGING.md).
+
+Auto-update and release workflow: [docs/UPDATES.md](docs/UPDATES.md).
 
 Model conversion and quantization: [docs/MODEL_CONVERSION.md](docs/MODEL_CONVERSION.md).
 
