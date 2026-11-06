@@ -103,8 +103,9 @@ dist/zotero-texlink-<version>.xpi.sha256
 
 The build script:
 
-1. validates the manifest (including the required HTTPS `update_url`), model
-   SHA256 values, tokenizer vocabulary size, and ORT assets;
+1. validates the manifest (including the required HTTPS `update_url` and
+   `updates.json` array format), model SHA256 values, tokenizer vocabulary size,
+   and ORT assets;
 2. scans runtime JavaScript and rejects external HTTP URLs;
 3. writes runtime files into the XPI with deflate compression;
 4. computes the XPI SHA256.
@@ -158,15 +159,17 @@ Within `applications.zotero`, `id`, `update_url`, and `strict_max_version` are
 required by Zotero 10's install validation. `update_url` must start with
 `https:`; otherwise the Addon Manager's `checkUpdateSecurity` marks the add-on
 as `appDisabled`. TexLink uses
-`https://zotero-texlink.invalid/updates.json` as a placeholder with no real
-server, and runtime code never requests it. Replace it with a real HTTPS update
-manifest URL before public distribution.
+`https://raw.githubusercontent.com/yuweidong/zotero-texlink/main/updates.json`
+as its update manifest. The Add-on Manager may fetch that document to check for
+new releases; TexLink's OCR and note-writing code never does. See
+[UPDATES.md](UPDATES.md) for the release workflow.
 
 The plugin's capability boundary is enforced by its code:
 
 - it reads only `chrome://zotero-texlink/` resources;
 - it uses the Zotero object model and a few guarded, read-only Reader UI fields;
-- it makes no external network requests;
+- its runtime code makes no external network requests; Zotero's Add-on Manager
+  handles the separate HTTPS update check;
 - it launches no external process;
 - it bundles the model, WASM, and tokenizer in full.
 
