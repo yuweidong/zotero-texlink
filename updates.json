@@ -1,0 +1,18 @@
+{
+  "addons": {
+    "zotero-texlink@yuweidong.dev": {
+      "updates": [
+        {
+          "version": "0.1.3",
+          "update_link": "https://github.com/yuweidong/zotero-texlink/releases/download/v0.1.3/zotero-texlink-0.1.3.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "10.0",
+              "strict_max_version": "10.999"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
