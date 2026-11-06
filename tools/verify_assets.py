@@ -17,7 +17,12 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MODEL_DIR = ROOT / "chrome/content/models"
+GITHUB_REPO = "yuweidong/zotero-texlink"
+EXPECTED_UPDATE_URL = (
+    f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/updates.json"
+)
 ORT_DIR = ROOT / "chrome/content/vendor/ort"
+PLUGIN_ID = "zotero-texlink@yuweidong.dev"
 RUNTIME_JS = [
     ROOT / "bootstrap.js",
     ROOT / "chrome/content/scripts/texlink-service.js",
@@ -72,6 +77,71 @@ def main() -> None:
     update_url = str(zotero.get("update_url", ""))
     if not update_url.startswith("https://"):
         fail("applications.zotero.update_url is missing or not https://; Zotero will disable the add-on")
+    if update_url != EXPECTED_UPDATE_URL:
+        fail(
+            "applications.zotero.update_url must be "
+            f"{EXPECTED_UPDATE_URL!r}; found {update_url!r}"
+        )
+
+    updates_path = ROOT / "updates.json"
+    if not updates_path.is_file():
+        fail("Missing updates.json (Zotero auto-update manifest)")
+    update_document = json.loads(updates_path.read_text(encoding="utf-8"))
+    plugin_update = (
+        update_document.get("addons", {}).get(PLUGIN_ID, {})
+    )
+    if "versions" in plugin_update:
+        fail("updates.json must use an 'updates' array, not a 'versions' object")
+    update_entries = plugin_update.get("updates")
+    if not isinstance(update_entries, list) or not update_entries:
+        fail("updates.json must contain a non-empty updates array")
+
+    manifest_version = str(manifest["version"])
+    version_pattern = re.compile(r"^\d+(?:\.\d+)*$")
+    for entry in update_entries:
+        if not isinstance(entry, dict):
+            fail("Each updates[] entry must be an object")
+        entry_version = str(entry.get("version", ""))
+        if not version_pattern.fullmatch(entry_version):
+            fail(f"Invalid update entry version: {entry_version!r}")
+        update_link = str(entry.get("update_link", ""))
+        expected_prefix = (
+            f"https://github.com/{GITHUB_REPO}/releases/download/"
+            f"v{entry_version}/"
+        )
+        if not update_link.startswith(expected_prefix):
+            fail(
+                f"Update link for {entry_version} must start with {expected_prefix!r}"
+            )
+        expected_asset = f"zotero-texlink-{entry_version}.xpi"
+        if not update_link.endswith("/" + expected_asset):
+            fail(
+                f"Update link for {entry_version} must point to {expected_asset!r}"
+            )
+        ranges = entry.get("applications", {}).get("zotero", {})
+        if str(ranges.get("strict_min_version")) != str(zotero["strict_min_version"]):
+            fail(f"Update entry {entry_version} has a mismatched strict_min_version")
+        if str(ranges.get("strict_max_version")) != str(zotero["strict_max_version"]):
+            fail(f"Update entry {entry_version} has a mismatched strict_max_version")
+
+    current_entries = [
+        item for item in update_entries
+        if str(item.get("version")) == manifest_version
+    ]
+    if not current_entries:
+        fail(
+            f"updates.json has no entry for manifest version {manifest_version}; "
+            "run tools/update_manifest.py"
+        )
+    newest = max(
+        (str(item["version"]) for item in update_entries),
+        key=lambda value: tuple(int(part) for part in value.split(".")),
+    )
+    if newest != manifest_version:
+        fail(
+            f"updates.json newest version is {newest}, but manifest version is "
+            f"{manifest_version}; run tools/update_manifest.py"
+        )
 
     config = json.loads((MODEL_DIR / "texlink-model.json").read_text(encoding="utf-8"))
     expected = config.get("assets", {})
@@ -107,7 +177,7 @@ def main() -> None:
         if re.search(r"\bfetch\s*\(\s*[\"']https?://", text):
             fail(f"{path.relative_to(ROOT)} contains an external fetch")
 
-    print("[OK] manifest / models / tokenizer / ORT assets verified")
+    print("[OK] manifest / update manifest / models / tokenizer / ORT assets verified")
     print(f"     encoder : {MODEL_DIR.joinpath('encoder_model_int8.onnx').stat().st_size / 1024 / 1024:.1f} MiB")
     print(f"     decoder : {MODEL_DIR.joinpath('decoder_model_int8.onnx').stat().st_size / 1024 / 1024:.1f} MiB")
     print(f"     wasm    : {ORT_DIR.joinpath('ort-wasm-simd.wasm').stat().st_size / 1024 / 1024:.1f} MiB")
