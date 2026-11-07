@@ -19,13 +19,13 @@
 // 3. Advanced users may customize this template. If {{latexRaw}} or
 //    {{pageLabel}} is missing, TexLink falls back to its internal template.
 const TEXLINK_DEFAULT_NOTE_TEMPLATE = [
-  '<blockquote data-texlink-entry="{{id}}" data-texlink-annotation="{{annotationKey}}">',
-  '  <h3>TexLink formula anchor</h3>',
+  '<blockquote data-texlink-entry="{{id}}" data-texlink-annotation="{{annotationKey}}" data-texlink-confidence="{{confidence}}">',
+  '  <h3>{{anchorTitle}}</h3>',
   '  <pre class="math">$${{latexRaw}}$$</pre>',
-  '  <p><strong>Page:</strong> {{pageLabel}} | <strong>Extracted:</strong> {{timestamp}}</p>',
-  '  <p><strong>Source:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">Open in PDF</a> | <a href="{{itemLink}}">View item</a></p>',
+  '  <p><strong>{{labelPage}}:</strong> {{pageLabel}} | <strong>{{labelExtracted}}:</strong> {{timestamp}}</p>',
+  '  <p><strong>{{labelSource}}:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">{{labelOpenPdf}}</a> | <a href="{{itemLink}}">{{labelViewItem}}</a></p>',
   '  {{commentBlock}}',
-  '  <p><strong>LaTeX source:</strong></p>',
+  '  <p><strong>{{labelLatexSource}}:</strong></p>',
   '  <pre>{{latexRaw}}</pre>',
   '</blockquote>'
 ].join('\n');
