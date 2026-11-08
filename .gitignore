@@ -7,3 +7,4 @@ node_modules/
 .zotero-test-profile/
 dist/*.xpi
 dist/*.sha256
+# Ignore the following files in the dist folder, but not the dist folder itself
