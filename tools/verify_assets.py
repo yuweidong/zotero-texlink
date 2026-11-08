@@ -27,6 +27,7 @@ RUNTIME_JS = [
     ROOT / "bootstrap.js",
     ROOT / "chrome/content/scripts/texlink-service.js",
     ROOT / "chrome/content/scripts/worker.js",
+    ROOT / "chrome/content/preferences/preferences.js",
 ]
 
 
@@ -50,6 +51,13 @@ def main() -> None:
         ROOT / "prefs.js",
         ROOT / "chrome/content/scripts/texlink-service.js",
         ROOT / "chrome/content/scripts/worker.js",
+        ROOT / "chrome/content/preferences/preferences.xhtml",
+        ROOT / "chrome/content/preferences/preferences.js",
+        ROOT / "chrome/content/preferences/preferences.css",
+        ROOT / "addon/locale/en-US/texlink.ftl",
+        ROOT / "addon/locale/zh-CN/texlink.ftl",
+        ROOT / "chrome/content/icons/texlink-prefs.svg",
+        ROOT / "chrome/content/icons/texlink-prefs.png",
         ROOT / "chrome/content/models/texlink-model.json",
         ROOT / "chrome/content/models/tokenizer.json",
         ROOT / "chrome/content/models/encoder_model_int8.onnx",
@@ -124,6 +132,25 @@ def main() -> None:
         if str(ranges.get("strict_max_version")) != str(zotero["strict_max_version"]):
             fail(f"Update entry {entry_version} has a mismatched strict_max_version")
 
+        update_hash = entry.get("update_hash")
+        if update_hash is not None:
+            if not re.fullmatch(r"sha(?:256|512):[0-9a-fA-F]+", str(update_hash)):
+                fail(f"Update entry {entry_version} has an invalid update_hash")
+            # If the release XPI is present locally, verify the hash matches.
+            local_xpi = ROOT / "dist" / f"zotero-texlink-{entry_version}.xpi"
+            if local_xpi.is_file():
+                algorithm, expected = str(update_hash).split(":", 1)
+                digest = hashlib.new(algorithm)
+                with local_xpi.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                actual = digest.hexdigest()
+                if actual.lower() != expected.lower():
+                    fail(
+                        f"Update entry {entry_version} hash does not match "
+                        f"{local_xpi.relative_to(ROOT)}"
+                    )
+
     current_entries = [
         item for item in update_entries
         if str(item.get("version")) == manifest_version
@@ -142,6 +169,20 @@ def main() -> None:
             f"updates.json newest version is {newest}, but manifest version is "
             f"{manifest_version}; run tools/update_manifest.py"
         )
+
+    # Every data-l10n-id in the preferences pane must exist in both Fluent
+    # bundles. This catches missing translations before packaging.
+    prefs_xhtml = ROOT / "chrome/content/preferences/preferences.xhtml"
+    l10n_ids = set(re.findall(r'data-l10n-id="([^"]+)"', prefs_xhtml.read_text(encoding="utf-8")))
+    for locale in ("en-US", "zh-CN"):
+        ftl_path = ROOT / "addon/locale" / locale / "texlink.ftl"
+        ftl = ftl_path.read_text(encoding="utf-8")
+        missing = sorted(
+            key for key in l10n_ids
+            if not re.search(rf"^{re.escape(key)}\s*=", ftl, re.M)
+        )
+        if missing:
+            fail(f"{locale} Fluent file is missing keys: {', '.join(missing)}")
 
     config = json.loads((MODEL_DIR / "texlink-model.json").read_text(encoding="utf-8"))
     expected = config.get("assets", {})
