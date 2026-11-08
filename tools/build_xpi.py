@@ -20,6 +20,7 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
+LOCALE_SOURCE = ROOT / "addon/locale"
 INCLUDE_DIRS = [
     "chrome/content",
     "third_party",
@@ -64,12 +65,29 @@ def main() -> None:
                 continue
             files.append((path, path.relative_to(ROOT).as_posix()))
 
+    # Fluent sources live under addon/locale in the repository but must be at
+    # the XPI root as locale/<locale>/<file>.ftl for Zotero.Plugins to discover
+    # and register them.
+    if LOCALE_SOURCE.is_dir():
+        for path in sorted(LOCALE_SOURCE.rglob("*.ftl")):
+            files.append((
+                path,
+                "locale/" + path.relative_to(LOCALE_SOURCE).as_posix()
+            ))
+
     required = {
         "manifest.json",
         "bootstrap.js",
         "prefs.js",
         "chrome/content/scripts/texlink-service.js",
         "chrome/content/scripts/worker.js",
+        "chrome/content/preferences/preferences.xhtml",
+        "chrome/content/preferences/preferences.js",
+        "chrome/content/preferences/preferences.css",
+        "locale/en-US/texlink.ftl",
+        "locale/zh-CN/texlink.ftl",
+        "chrome/content/icons/texlink-prefs.svg",
+        "chrome/content/icons/texlink-prefs.png",
         "chrome/content/models/encoder_model_int8.onnx",
         "chrome/content/models/decoder_model_int8.onnx",
         "chrome/content/models/tokenizer.json",
@@ -120,6 +138,10 @@ def main() -> None:
     print(f"[OK] Built {output.relative_to(ROOT)} ({size_mb:.1f} MiB)")
     print(f"     SHA256 {digest}")
     print("     Install: Zotero 10 -> Tools -> Add-ons -> gear -> Install Add-on From File...")
+
+    # If updates.json already has an update_hash for this version, make sure it
+    # still matches the XPI that was just built.
+    subprocess.run([sys.executable, str(ROOT / "tools/verify_assets.py")], check=True)
 
 
 if __name__ == "__main__":
