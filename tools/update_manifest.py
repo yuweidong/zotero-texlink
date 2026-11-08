@@ -9,12 +9,16 @@ Usage:
     python3 tools/update_manifest.py --version 0.1.4 --tag v0.1.4
 
 Bump `version` in manifest.json before running this script. The script verifies
-the manifest update URL, prepends the version entry, and writes a direct GitHub
-release asset URL.
+the manifest update URL, adds or replaces the version entry, writes a direct
+GitHub release asset URL, and computes update_hash from the built XPI.
+
+Use --no-hash for the first pass before build_xpi.py, then run the script again
+after the XPI exists to add the final SHA-256 hash.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -38,6 +42,14 @@ def version_key(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split("."))
 
 
+def sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -56,6 +68,16 @@ def main() -> None:
     parser.add_argument(
         "--asset",
         help="Release asset name; defaults to zotero-texlink-<version>.xpi",
+    )
+    parser.add_argument(
+        "--xpi",
+        type=pathlib.Path,
+        help="Built XPI used for update_hash; defaults to dist/<asset>",
+    )
+    parser.add_argument(
+        "--no-hash",
+        action="store_true",
+        help="Do not add update_hash (not recommended for a release)",
     )
     args = parser.parse_args()
 
@@ -80,9 +102,19 @@ def main() -> None:
 
     tag = args.tag or f"v{version}"
     asset = args.asset or f"zotero-texlink-{version}.xpi"
+    xpi_path = args.xpi or (ROOT / "dist" / asset)
     update_link = (
         f"https://github.com/{args.repo}/releases/download/{tag}/{asset}"
     )
+
+    update_hash = None
+    if not args.no_hash:
+        if not xpi_path.is_file():
+            raise SystemExit(
+                f"Built XPI not found at {xpi_path}. Run tools/build_xpi.py first, "
+                "or pass --no-hash explicitly."
+            )
+        update_hash = f"sha256:{sha256(xpi_path)}"
 
     if UPDATES.is_file():
         document = json.loads(UPDATES.read_text(encoding="utf-8"))
@@ -111,6 +143,8 @@ def main() -> None:
             }
         },
     }
+    if update_hash:
+        entry["update_hash"] = update_hash
 
     updates = [
         item for item in updates
@@ -128,6 +162,8 @@ def main() -> None:
     print(f"[OK] Updated {UPDATES.relative_to(ROOT)} for {version}")
     print(f"     update_url: {expected_update_url}")
     print(f"     asset     : {update_link}")
+    if update_hash:
+        print(f"     update_hash: {update_hash}")
     print("     Next: publish the GitHub release, upload the XPI asset, then commit/push.")
 
 
