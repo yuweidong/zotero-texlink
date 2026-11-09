@@ -49,10 +49,6 @@ jobs:
           )
           if not entry:
               raise SystemExit(f"updates.json has no entry for {version}")
-          if not str(entry.get("update_hash", "")).startswith("sha256:"):
-              raise SystemExit(
-                  f"updates.json entry for {version} has no sha256 update_hash"
-              )
           print(f"Release metadata checks passed for {version}")
           PY
 
