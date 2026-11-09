@@ -16,11 +16,18 @@ zotero-texlink-<version>.xpi
 ├── third_party/
 │   ├── LICENSE-onnxruntime.txt
 │   └── LICENSE-pix2text.txt
+├── locale/
+│   ├── en-US/texlink.ftl
+│   └── zh-CN/texlink.ftl
 └── chrome/
     └── content/
         ├── scripts/
         │   ├── texlink-service.js
         │   └── worker.js
+        ├── preferences/
+        │   ├── preferences.xhtml
+        │   ├── preferences.js
+        │   └── preferences.css
         ├── models/
         │   ├── texlink-model.json
         │   ├── encoder_model_int8.onnx
@@ -34,11 +41,17 @@ zotero-texlink-<version>.xpi
         │       └── ort-wasm-simd.wasm
         └── icons/
             ├── texlink-48.png
-            └── texlink-96.png
+            ├── texlink-96.png
+            ├── texlink-prefs.svg
+            └── texlink-prefs.png
 ```
 
 Do **not** package `README.md`, `docs/`, `tools/`, `tests/`, or `.venv` into the
 runtime XPI. The build script excludes them automatically.
+
+Fluent source files live in `addon/locale/<locale>/texlink.ftl` in the repository.
+The build script maps them into the XPI at `locale/<locale>/texlink.ftl`, which
+is the path Zotero's plugin localization loader scans.
 
 ## 2. Resource URL mapping
 
@@ -105,7 +118,7 @@ The build script:
 
 1. validates the manifest (including the required HTTPS `update_url` and
    `updates.json` array format), model SHA256 values, tokenizer vocabulary size,
-   and ORT assets;
+   ORT assets, and any declared `update_hash`;
 2. scans runtime JavaScript and rejects external HTTP URLs;
 3. writes runtime files into the XPI with deflate compression;
 4. computes the XPI SHA256.
@@ -174,6 +187,15 @@ The plugin's capability boundary is enforced by its code:
 - it bundles the model, WASM, and tokenizer in full.
 
 The absence of a `permissions` field is therefore intentional.
+
+## 8. Continuous integration
+
+`.github/workflows/verify.yml` runs asset validation, decoder tests, service
+helper tests, and an XPI build for pushes and pull requests.
+
+`.github/workflows/release.yml` runs on `v*` tags, checks the tag, manifest, and
+`updates.json` entry, builds and verifies the XPI, and creates or updates the
+GitHub release with the XPI and checksum.
 
 ## 7. Signing and distribution
 
