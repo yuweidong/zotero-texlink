@@ -1,0 +1,44 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify assets and update manifest
+        run: python3 tools/verify_assets.py
+
+      - name: Test ByteLevel BPE decoder
+        run: node tests/tokenizer_decode.test.js
+
+      - name: Test service helpers
+        run: node tests/service_helpers.test.js
+
+      - name: Build XPI
+        run: python3 tools/build_xpi.py
+
+      - name: Re-verify built artifact
+        run: python3 tools/verify_assets.py
+
+      - name: Upload XPI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: texlink-xpi
+          path: dist/*
+          if-no-files-found: error
