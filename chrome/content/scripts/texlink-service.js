@@ -49,13 +49,13 @@ var TexLinkService = (function () {
   // user-editable copy; if that copy is cleared or broken, fall back here so
   // essential fields are never lost.
   const DEFAULT_NOTE_TEMPLATE = [
-    '<blockquote data-texlink-entry="{{id}}" data-texlink-annotation="{{annotationKey}}">',
-    '  <h3>TexLink formula anchor</h3>',
+    '<blockquote data-texlink-entry="{{id}}" data-texlink-annotation="{{annotationKey}}" data-texlink-confidence="{{confidence}}">',
+    '  <h3>{{anchorTitle}}</h3>',
     '  <pre class="math">$${{latexRaw}}$$</pre>',
-    '  <p><strong>Page:</strong> {{pageLabel}} | <strong>Extracted:</strong> {{timestamp}}</p>',
-    '  <p><strong>Source:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">Open in PDF</a> | <a href="{{itemLink}}">View item</a></p>',
+    '  <p><strong>{{labelPage}}:</strong> {{pageLabel}} | <strong>{{labelExtracted}}:</strong> {{timestamp}}</p>',
+    '  <p><strong>{{labelSource}}:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">{{labelOpenPdf}}</a> | <a href="{{itemLink}}">{{labelViewItem}}</a></p>',
     '  {{commentBlock}}',
-    '  <p><strong>LaTeX source:</strong></p>',
+    '  <p><strong>{{labelLatexSource}}:</strong></p>',
     '  <pre>{{latexRaw}}</pre>',
     '</blockquote>'
   ].join("\n");
@@ -259,13 +259,18 @@ var TexLinkService = (function () {
   class Service {
     constructor(options = {}) {
       this.id = options.id || PLUGIN_ID;
-      this.version = options.version || "0.1.3";
+      this.version = options.version || "0.1.4";
       this.rootURI = options.rootURI || "";
       this.chromeBase = options.chromeBase || `chrome://${CHROME_NAME}/content/`;
 
       this._started = false;
       this._destroyed = false;
       this._busy = false;
+      this._cancelRequested = false;
+      this._workerAborted = false;
+      this._fallbackErrorWindow = null;
+      this._prefsPaneID = null;
+      this._l10nInitialized = false;
 
       this._modelConfig = null;
       this._tokenizer = null;
@@ -305,6 +310,12 @@ var TexLinkService = (function () {
 
       // Wait for the main window UI; otherwise Zotero.Reader and ZoteroContextPane may be unavailable.
       await Zotero.uiReadyPromise;
+
+      this._initLocalization();
+
+      // Register the preferences pane even when TexLink is disabled, so the
+      // user can always open Settings and re-enable it.
+      await this._registerPreferencesPane();
 
       if (!this._getPref("enabled", true)) {
         this._log("disabled by preference");
@@ -423,10 +434,24 @@ var TexLinkService = (function () {
 
       this._unbindAllReaderWindows();
       this._clearToasts();
+      if (this._fallbackErrorWindow) {
+        try { this._fallbackErrorWindow.close(); } catch (e) { /* noop */ }
+        this._fallbackErrorWindow = null;
+      }
 
       if (this._notifierID) {
         try { Zotero.Notifier.unregisterObserver(this._notifierID); } catch (e) { /* noop */ }
         this._notifierID = null;
+      }
+
+      if (this._l10nInitialized) {
+        try { Zotero.ftl?.removeResourceIds?.(["texlink.ftl"]); } catch (e) { /* noop */ }
+        this._l10nInitialized = false;
+      }
+
+      if (this._prefsPaneID && Zotero.PreferencePanes?.unregister) {
+        try { Zotero.PreferencePanes.unregister(this._prefsPaneID); } catch (e) { /* noop */ }
+        this._prefsPaneID = null;
       }
 
       if (this._readerContextMenuHandler && Zotero.Reader?.unregisterEventListener) {
@@ -460,6 +485,60 @@ var TexLinkService = (function () {
       this._modelReady = false;
       this._modelInitPromise = null;
       this._activeProgress = null;
+    }
+
+    // ===================== Preferences =====================
+
+    _initLocalization() {
+      try {
+        if (!Zotero.ftl?.addResourceIds) return;
+        Zotero.ftl.addResourceIds(["texlink.ftl"]);
+        this._l10nInitialized = true;
+      }
+      catch (error) {
+        this._logError("Failed to initialize localization", error);
+      }
+    }
+
+    _t(key, fallback, args) {
+      try {
+        const value = Zotero.ftl?.formatValueSync?.(key, args || undefined);
+        if (value) return value;
+      }
+      catch (error) {
+        // Fall back to the English string below.
+      }
+      return fallback;
+    }
+
+    getDefaultNoteTemplate() {
+      return DEFAULT_NOTE_TEMPLATE;
+    }
+
+    getDefaultLogNoteTitle() {
+      return this._t("texlink-note-title", DEFAULT_LOG_TITLE);
+    }
+
+    async _registerPreferencesPane() {
+      if (!Zotero.PreferencePanes?.register) {
+        this._log("Zotero.PreferencePanes.register unavailable");
+        return;
+      }
+      try {
+        this._prefsPaneID = await Zotero.PreferencePanes.register({
+          pluginID: this.id,
+          id: "texlink-preferences",
+          label: "TexLink",
+          image: `${this.chromeBase}icons/texlink-prefs.png`,
+          src: `${this.chromeBase}preferences/preferences.xhtml`,
+          scripts: [`${this.chromeBase}preferences/preferences.js`],
+          stylesheets: [`${this.chromeBase}preferences/preferences.css`]
+        });
+        this._log("preferences pane registered");
+      }
+      catch (error) {
+        this._logError("Failed to register preferences pane", error);
+      }
     }
 
     // ===================== Preferences and logging =====================
@@ -593,18 +672,45 @@ var TexLinkService = (function () {
       this._worker.onerror = (event) => {
         const message = event?.message || "Worker script execution failed";
         const error = new Error(message);
-        this._modelError = this._modelError || error;
-        this._modelReady = false;
-        this._rejectAllPending(error);
+        const progress = this._activeProgress;
         this._logError("Worker error", error);
-        this._setProgress(this._activeProgress, null, `Inference Worker error: ${message}`, true);
+        this._abortWorker(error);
+        this._setProgress(
+          progress,
+          null,
+          this._t(
+            "texlink-progress-worker-error",
+            `Inference Worker error: ${message}`,
+            { message }
+          ),
+          true
+        );
       };
       this._worker.onmessageerror = () => {
         const error = new Error("Failed to deserialize Worker message");
-        this._rejectAllPending(error);
         this._logError("Worker message error", error);
+        this._abortWorker(error);
       };
+      this._workerAborted = false;
       return this._worker;
+    }
+
+    /**
+     * Terminate the current Worker and reject every pending request. The next
+     * recognition attempt creates a fresh Worker and reloads the model.
+     */
+    _abortWorker(error) {
+      this._workerAborted = true;
+      this._modelReady = false;
+      this._modelInitPromise = null;
+      this._modelError = null;
+      this._workerBooted = false;
+      if (this._worker) {
+        try { this._worker.terminate(); } catch (e) { /* noop */ }
+        this._worker = null;
+      }
+      this._rejectAllPending(error || new Error("Inference Worker was reset"));
+      this._activeProgress = null;
     }
 
     _rejectAllPending(error) {
@@ -623,15 +729,16 @@ var TexLinkService = (function () {
      */
     _workerRequest(type, payload, transfer, timeoutMs = WORKER_RECOGNITION_TIMEOUT) {
       if (!this._worker) {
-        return Promise.reject(new Error("Inference Worker is not initialized"));
+        return Promise.reject(new Error(this._t(
+          "texlink-error-worker-init",
+          "Inference Worker is not initialized."
+        )));
       }
       const requestId = ++this._requestSeq;
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
-          const pending = this._pending.get(requestId);
-          if (!pending) return;
-          this._pending.delete(requestId);
-          reject(new Error(`Worker request timed out: ${type}`));
+          if (!this._pending.has(requestId)) return;
+          this._abortWorker(new Error(`Worker request timed out: ${type}`));
         }, timeoutMs);
 
         this._pending.set(requestId, { resolve, reject, timer });
@@ -697,7 +804,24 @@ var TexLinkService = (function () {
       if (message.phase === "decode" && message.maxNewTokens) {
         percent = Math.min(92, 60 + Math.round((message.step / message.maxNewTokens) * 32));
       }
-      this._setProgress(this._activeProgress, percent, message.text || "Processing…");
+      let text = this._t("texlink-progress-processing", "Processing...");
+      if (message.phase === "ort") {
+        text = this._t("texlink-progress-ort", "Initializing offline inference engine...");
+      }
+      else if (message.phase === "encoder") {
+        text = this._t("texlink-progress-encoder", "Loading formula model (encoder)...");
+      }
+      else if (message.phase === "decoder") {
+        text = this._t("texlink-progress-decoder", "Loading formula model (decoder)...");
+      }
+      else if (message.phase === "decode" && message.maxNewTokens) {
+        text = this._t(
+          "texlink-progress-decoding",
+          `Decoding formula (${message.step}/${message.maxNewTokens})...`,
+          { step: message.step, max: message.maxNewTokens }
+        );
+      }
+      this._setProgress(this._activeProgress, percent, text);
     }
 
     /**
@@ -707,10 +831,17 @@ var TexLinkService = (function () {
     async _ensureModelLoaded(progress) {
       if (this._modelReady) return;
       if (this._modelError) {
-        throw new Error(`Model load failed: ${this._modelError.message || this._modelError}`);
+        throw new Error(this._t(
+          "texlink-error-model-load",
+          `Model load failed: ${this._modelError.message || this._modelError}`,
+          { message: this._modelError.message || String(this._modelError) }
+        ));
       }
       if (!this._modelConfig || !this._tokenizer) {
-        throw new Error("Model configuration or tokenizer is not loaded yet");
+        throw new Error(this._t(
+          "texlink-error-model-config",
+          "Model configuration or tokenizer is not loaded yet."
+        ));
       }
       if (!this._worker) this._createWorker();
 
@@ -735,7 +866,9 @@ var TexLinkService = (function () {
           this._log("ONNX sessions ready");
           this._diag("worker-init-done");
         }).catch((error) => {
-          this._modelError = error;
+          if (!this._workerAborted) {
+            this._modelError = error;
+          }
           this._modelInitPromise = null;
           throw error;
         }).finally(() => {
@@ -762,8 +895,8 @@ var TexLinkService = (function () {
           // This API requires append to run synchronously; do not await before append.
           append({
             label: items.length > 1
-              ? `TexLink: Recognize ${items.length} Formula Screenshots and Add to Note`
-              : "TexLink: Recognize Formula and Add to Note",
+              ? this._t("texlink-menu-multiple", "TexLink: Recognize Selected Formulas and Add to Note")
+              : this._t("texlink-menu-single", "TexLink: Recognize Formula and Add to Note"),
             onCommand: () => {
               // Important: do not open a new native progress window inside this
               // native/React menu callback stack. Return control to the menu so
@@ -979,7 +1112,7 @@ var TexLinkService = (function () {
       event.preventDefault();
       event.stopPropagation();
       if (this._busy) {
-        this._showError(new Error("TexLink is still processing the previous formula; please wait."), reader);
+        this._showError(new Error(this._t("texlink-error-busy", "TexLink is still processing the previous formula; please wait.")), reader);
         return;
       }
       this.recognizeFromReader(reader).catch((error) => this._showError(error, reader));
@@ -1126,10 +1259,18 @@ var TexLinkService = (function () {
 
       const menuitem = doc.createXULElement("menuitem");
       menuitem.id = "texlink-tools-menuitem";
-      menuitem.setAttribute("label", "TexLink: Recognize Selected Formula Screenshot");
+      menuitem.setAttribute("class", "menuitem-iconic");
+      menuitem.setAttribute("image", `${this.chromeBase}icons/texlink-prefs.png`);
+      menuitem.setAttribute(
+        "label",
+        this._t("texlink-menu-tools", "TexLink: Recognize Selected Formula Screenshot")
+      );
       menuitem.setAttribute(
         "tooltiptext",
-        "First select a formula with the image annotation tool in the PDF, then click here or use the shortcut."
+        this._t(
+          "texlink-menu-tools-tooltip",
+          "First select a formula with the image annotation tool in the PDF, then click here or use the shortcut."
+        )
       );
 
       const handler = () => {
@@ -1156,9 +1297,10 @@ var TexLinkService = (function () {
     async recognizeFromActiveReader() {
       const reader = this._getActiveReader();
       if (!reader) {
-        this._showError(new Error(
+        this._showError(new Error(this._t(
+          "texlink-error-open-pdf",
           "Open a PDF and select a formula with the image annotation tool first. TexLink does not read the clipboard or upload images."
-        ), null);
+        )), null);
         return [];
       }
       return this.recognizeFromReader(reader);
@@ -1166,14 +1308,15 @@ var TexLinkService = (function () {
 
     async recognizeFromReader(reader) {
       if (this._busy) {
-        this._showError(new Error("TexLink is still processing the previous formula; please wait."), reader);
+        this._showError(new Error(this._t("texlink-error-busy", "TexLink is still processing the previous formula; please wait.")), reader);
         return [];
       }
       const items = this._getSelectedImageAnnotations(reader);
       if (!items.length) {
-        this._showError(new Error(
+        this._showError(new Error(this._t(
+          "texlink-error-no-annotation",
           "No image annotation is selected. Use the image annotation tool in the Zotero PDF reader to select the formula, then select that screenshot and try again."
-        ), reader);
+        )), reader);
         return [];
       }
       return this._recognizeAnnotationItems(items, reader);
@@ -1192,21 +1335,32 @@ var TexLinkService = (function () {
       if (!Array.isArray(annotationItems) || !annotationItems.length) return [];
       if (this._busy) {
         if (!options.auto) {
-          this._showError(new Error("TexLink is still processing the previous formula; please wait."), reader);
+          this._showError(new Error(this._t("texlink-error-busy", "TexLink is still processing the previous formula; please wait.")), reader);
         }
         return [];
       }
       if (!this._modelConfig || !this._tokenizer) {
-        this._showError(new Error("Formula model/tokenizer is not loaded, so recognition is unavailable. Reinstall the complete TexLink.xpi."), reader);
+        this._showError(new Error(this._t(
+          "texlink-error-model-missing",
+          "Formula model/tokenizer is not loaded, so recognition is unavailable. Reinstall the complete TexLink.xpi."
+        )), reader);
         return [];
       }
 
       this._busy = true;
+      this._cancelRequested = false;
       await this._diag("pipeline-start", options.auto ? "auto" : "manual");
       // Let the event source (menu/shortcut/Notifier) finish its current event
       // before any UI update.
       await this._delay(60);
-      const progress = this._newProgress("Preparing to recognize formula…", reader);
+      const progress = this._newProgress(
+        this._t("texlink-progress-preparing", "Preparing to recognize formula..."),
+        reader,
+        {
+          cancellable: !options.auto,
+          onCancel: () => this._cancelRecognition()
+        }
+      );
       this._activeProgress = progress;
       const results = [];
       const failures = [];
@@ -1216,13 +1370,17 @@ var TexLinkService = (function () {
         if (!options.auto && this._getPref("promptForComment", false)) {
           effectiveComment = await this._promptComment();
           if (effectiveComment === null) {
-            this._setProgress(progress, 100, "Canceled");
+            this._setProgress(progress, 100, this._t("texlink-progress-canceled", "Canceled"));
             this._closeProgress(progress, 1000);
             return [];
           }
         }
 
-        this._setProgress(progress, 12, "Loading offline model…");
+        this._setProgress(
+          progress,
+          12,
+          this._t("texlink-progress-loading-model", "Loading offline model...")
+        );
         await this._diag("model-load-start");
         await this._ensureModelLoaded(progress);
         await this._diag("model-load-end");
@@ -1234,7 +1392,11 @@ var TexLinkService = (function () {
             : "";
           try {
             await this._diag("annotation-start", item.key);
-            this._setProgress(progress, 60, `${prefix}Reading screenshot and running inference…`);
+            this._setProgress(
+              progress,
+              60,
+              `${prefix}${this._t("texlink-progress-reading", "Reading screenshot and running inference...")}`
+            );
             const result = await this._recognizeSingle(item, reader, effectiveComment, progress, prefix);
             await this._diag("annotation-done", item.key);
             results.push(result);
@@ -1246,14 +1408,31 @@ var TexLinkService = (function () {
         }
 
         if (results.length) {
-          const failureText = failures.length
-            ? `, ${failures.length} failed; see Zotero debug output`
-            : "";
-          this._setProgress(
-            progress,
-            100,
-            `Added ${results.length} formula entries to the Zotero note${failureText}`
-          );
+          const duplicates = results.filter((result) => result.duplicate).length;
+          const added = results.length - duplicates;
+          const parts = [];
+          if (added) {
+            parts.push(this._t(
+              "texlink-progress-added",
+              `Added ${added} formula records to the Zotero note`,
+              { count: added }
+            ));
+          }
+          if (duplicates) {
+            parts.push(this._t(
+              "texlink-progress-skipped",
+              `Skipped ${duplicates} duplicate records`,
+              { count: duplicates }
+            ));
+          }
+          if (failures.length) {
+            parts.push(this._t(
+              "texlink-progress-failed-count",
+              `${failures.length} failed; see Zotero debug output`,
+              { count: failures.length }
+            ));
+          }
+          this._setProgress(progress, 100, parts.join("; "));
           this._closeProgress(progress, failures.length ? 10000 : 5000);
         }
         else {
@@ -1261,7 +1440,11 @@ var TexLinkService = (function () {
           this._setProgress(
             progress,
             null,
-            `Recognition failed: ${first?.message || "unknown error"}`,
+            this._t(
+              "texlink-progress-recognition-failed",
+              `Recognition failed: ${first?.message || "Unknown error"}`,
+              { message: first?.message || this._t("texlink-error-unknown", "Unknown error") }
+            ),
             true
           );
           this._closeProgress(progress, 10000);
@@ -1269,14 +1452,30 @@ var TexLinkService = (function () {
         return results;
       }
       catch (error) {
+        if (this._cancelRequested) {
+          await this._diag("pipeline-canceled");
+          this._setProgress(progress, null, this._t("texlink-progress-canceled", "Canceled"), true);
+          this._closeProgress(progress, 1500);
+          return results;
+        }
         await this._diag("pipeline-error", error.message || String(error));
-        this._setProgress(progress, null, `TexLink failed: ${error.message || error}`, true);
+        this._setProgress(
+          progress,
+          null,
+          this._t(
+            "texlink-progress-failed",
+            `TexLink failed: ${error.message || error}`,
+            { message: error.message || String(error) }
+          ),
+          true
+        );
         this._closeProgress(progress, 10000);
         this._logError("recognition pipeline failed", error);
         return results;
       }
       finally {
         this._busy = false;
+        this._cancelRequested = false;
         if (this._activeProgress === progress) this._activeProgress = null;
       }
     }
@@ -1291,16 +1490,24 @@ var TexLinkService = (function () {
       const image = await this._getAnnotationImage(annotationItem);
       await this._diag("image-read-done", image.length);
 
-      this._setProgress(progress, 64, `${prefix}Preprocessing image…`);
+      this._setProgress(
+        progress,
+        64,
+        `${prefix}${this._t("texlink-progress-preprocessing", "Preprocessing image...")}`
+      );
       await this._diag("preprocess-start");
       const tensor = await this._preprocessImage(image);
       await this._diag("preprocess-done", tensor.shape.join("x"));
 
-      this._setProgress(progress, 68, `${prefix}Recognizing formula offline…`);
+      this._setProgress(
+        progress,
+        68,
+        `${prefix}${this._t("texlink-progress-recognizing", "Recognizing formula offline...")}`
+      );
       // _ensureModelLoaded clears _activeProgress when it finishes; reattach it
       // before inference so Worker decode progress updates the same toast.
       this._activeProgress = progress;
-      const maxNewTokens = Number(this._getPref("maxNewTokens", 384)) || 384;
+      const maxNewTokens = this._maxNewTokens(this._getPref("maxNewTokens", 384));
       await this._diag("worker-request-start");
       const workerResult = await this._workerRequest(
         "recognize",
@@ -1315,11 +1522,14 @@ var TexLinkService = (function () {
 
       const latex = this._tokenizer.decode(workerResult.tokenIds || []);
       if (!latex) {
-        throw new Error("The model returned an empty formula; select a clearer formula image and try again");
+        throw new Error(this._t(
+          "texlink-error-empty-formula",
+          "The model returned an empty formula; select a clearer formula image and try again"
+        ));
       }
 
       const timestamp = new Date().toISOString();
-      const entryId = `${annotationItem.key}-${Date.now().toString(36)}`;
+      const entryId = this._entryIdFor(annotationItem.key, latex);
       const html = this._renderEntryHTML({
         latex,
         timestamp,
@@ -1329,17 +1539,34 @@ var TexLinkService = (function () {
         confidence: workerResult.confidence
       });
 
-      this._setProgress(progress, 92, `${prefix}Writing to Zotero note…`);
+      this._setProgress(
+        progress,
+        92,
+        `${prefix}${this._t("texlink-progress-writing", "Writing to Zotero note...")}`
+      );
       await this._diag("note-write-start");
-      const noteItem = await this._writeEntryToNote({
+      const writeResult = await this._writeEntryToNote({
         html,
         entryId,
         source,
         timestamp,
         latex
       });
+      const noteItem = writeResult.noteItem;
 
-      await this._diag("note-write-done", noteItem.id);
+      await this._diag("note-write-done", `${noteItem.id}${writeResult.duplicate ? " duplicate" : ""}`);
+      if (writeResult.duplicate) {
+        return {
+          latex,
+          noteItem,
+          annotationItem,
+          source,
+          timestamp,
+          confidence: workerResult.confidence,
+          elapsedMs: workerResult.elapsedMs,
+          duplicate: true
+        };
+      }
       if (this._getPref("openNoteAfterInsert", false)) {
         try {
           await Zotero.Notes.open(noteItem.id);
@@ -1356,8 +1583,33 @@ var TexLinkService = (function () {
         source,
         timestamp,
         confidence: workerResult.confidence,
-        elapsedMs: workerResult.elapsedMs
+        elapsedMs: workerResult.elapsedMs,
+        duplicate: false
       };
+    }
+
+    _maxNewTokens(value) {
+      const configured = Number(value);
+      return Math.min(
+        512,
+        Math.max(1, Number.isFinite(configured) && configured > 0
+          ? Math.floor(configured)
+          : 384)
+      );
+    }
+
+    /**
+     * Stable block ID for one annotation + LaTeX result. Re-running the same
+     * recognition produces the same ID and allows duplicate suppression.
+     */
+    _entryIdFor(annotationKey, latex) {
+      let hash = 2166136261;
+      const text = String(latex || "");
+      for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return `${annotationKey}-${(hash >>> 0).toString(36)}`;
     }
 
     /**
@@ -1367,7 +1619,7 @@ var TexLinkService = (function () {
      */
     async _getAnnotationImage(annotationItem) {
       if (!annotationItem?.isAnnotationSupportingImage?.()) {
-        throw new Error("This annotation is not an image annotation");
+        throw new Error(this._t("texlink-error-no-image", "This annotation is not an image annotation."));
       }
       let lastError = null;
       for (let attempt = 0; attempt < 12; attempt++) {
@@ -1384,7 +1636,16 @@ var TexLinkService = (function () {
         await this._delay(250);
       }
       throw new Error(
-        `Could not read the local cache for this screenshot${lastError ? `: ${lastError.message}` : ""}. Make sure the annotation image is synced/saved locally.`
+        lastError
+          ? this._t(
+            "texlink-error-cache-detail",
+            `Could not read the local cache for this screenshot: ${lastError.message}. Make sure the annotation image is synced/saved locally.`,
+            { detail: lastError.message }
+          )
+          : this._t(
+            "texlink-error-cache",
+            "Could not read the local cache for this screenshot. Make sure the annotation image is synced/saved locally."
+          )
       );
     }
 
@@ -1409,24 +1670,39 @@ var TexLinkService = (function () {
 
       const win = Zotero.getMainWindow() || Services.appShell.hiddenDOMWindow;
       const doc = win?.document;
-      if (!doc) throw new Error("Could not obtain the Zotero main window for image preprocessing");
+      if (!doc) {
+        throw new Error(this._t(
+          "texlink-error-main-window",
+          "Could not obtain the Zotero main window for image preprocessing."
+        ));
+      }
 
       const image = await new Promise((resolve, reject) => {
         const img = new win.Image();
         img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error("Could not decode the annotation image"));
+        img.onerror = () => reject(new Error(
+          this._t("texlink-error-decode-image", "Could not decode the annotation image.")
+        ));
         img.src = dataURL;
       });
 
       if (!image.naturalWidth || !image.naturalHeight) {
-        throw new Error("Annotation image has zero dimensions");
+        throw new Error(this._t(
+          "texlink-error-zero-image",
+          "Annotation image has zero dimensions."
+        ));
       }
 
       const canvas = doc.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (!ctx) throw new Error("Could not create a Canvas 2D context");
+      if (!ctx) {
+        throw new Error(this._t(
+          "texlink-error-canvas",
+          "Could not create a Canvas 2D context."
+        ));
+      }
 
       // Transparent backgrounds must be filled white; otherwise transparent
       // pixels become [0,0,0] and the model treats blank space as ink.
@@ -1525,13 +1801,17 @@ var TexLinkService = (function () {
     _buildSourceContext(annotationItem, reader) {
       const attachment = annotationItem?.parentItem || reader?._item;
       if (!attachment) {
-        throw new Error("This annotation has no associated PDF attachment");
+        throw new Error(this._t(
+          "texlink-error-no-attachment",
+          "This annotation has no associated PDF attachment."
+        ));
       }
       const regularItem = attachment.parentItem || null;
       if (!regularItem) {
-        throw new Error(
+        throw new Error(this._t(
+          "texlink-error-no-parent",
           "This PDF has no parent item. Add the PDF as an attachment under a bibliographic item first so TexLink can anchor formulas to that item's note."
-        );
+        ));
       }
 
       let position = {};
@@ -1548,7 +1828,11 @@ var TexLinkService = (function () {
         ? Number(position.pageIndex)
         : 0;
       const rawLabel = String(annotationItem.annotationPageLabel || "").trim();
-      const pageLabel = rawLabel || `PDF page ${pageIndex + 1}`;
+      const pageLabel = rawLabel || this._t(
+        "texlink-note-page-fallback",
+        `PDF page ${pageIndex + 1}`,
+        { page: pageIndex + 1 }
+      );
 
       const library = Zotero.Libraries.get(annotationItem.libraryID);
       const isGroup = library?.libraryType === "group";
@@ -1556,7 +1840,10 @@ var TexLinkService = (function () {
       const pdfLink = `zotero://open-pdf/${prefix}/items/${attachment.key}` +
         `?page=${pageIndex + 1}&annotation=${annotationItem.key}`;
       const itemLink = `zotero://select/${prefix}/items/${regularItem.key}`;
-      const sourceTitle = regularItem.getField("title") || attachment.getField("title") || "Untitled item";
+      const sourceTitle =
+        regularItem.getField("title") ||
+        attachment.getField("title") ||
+        this._t("texlink-note-untitled", "Untitled item");
 
       return {
         attachment,
@@ -1586,31 +1873,55 @@ var TexLinkService = (function () {
      * Zotero 10 note editor and is rendered by its built-in KaTeX; the same
      * LaTeX is also placed in a plain <pre> below as searchable source.
      */
-    _renderEntryHTML({ latex, timestamp, entryId, source, comment }) {
+    _renderEntryHTML({ latex, timestamp, entryId, source, comment, confidence }) {
       let template = String(this._getPref("noteTemplate", "") || "").trim();
       if (
         !template ||
         !template.includes("{{latexRaw}}") ||
         !template.includes("{{pageLabel}}") ||
-        /<\s*(script|iframe|object|embed|link|meta)\b|on[a-z]+\s*=|javascript:/i.test(template)
+        /<\s*(script|iframe|object|embed|link|meta|style|form|input|button|textarea|select|video|audio|source|img)\b|on[a-z]+\s*=|javascript:|(?:src|href)\s*=\s*["'](?:https?:)?[\\/]{2}/i.test(template)
       ) {
         template = DEFAULT_NOTE_TEMPLATE;
       }
 
       const escapedLatex = this._escapeHTML(latex);
+      const commentLabel = this._escapeHTML(
+        this._t("texlink-note-label-comment", "Comment")
+      );
       const commentBlock = comment
-        ? `<p><strong>Comment:</strong> ${this._escapeHTML(comment)}</p>`
+        ? `<p><strong>${commentLabel}:</strong> ${this._escapeHTML(comment)}</p>`
         : "";
 
       const values = {
         id: this._escapeHTML(entryId),
         annotationKey: this._escapeHTML(source.annotationKey || ""),
         latexRaw: escapedLatex,
+        anchorTitle: this._escapeHTML(
+          this._t("texlink-note-anchor-title", "TexLink formula anchor")
+        ),
+        labelPage: this._escapeHTML(this._t("texlink-note-label-page", "Page")),
+        labelExtracted: this._escapeHTML(
+          this._t("texlink-note-label-extracted", "Extracted")
+        ),
+        labelSource: this._escapeHTML(this._t("texlink-note-label-source", "Source")),
+        labelOpenPdf: this._escapeHTML(
+          this._t("texlink-note-label-open-pdf", "Open in PDF")
+        ),
+        labelViewItem: this._escapeHTML(
+          this._t("texlink-note-label-view-item", "View item")
+        ),
+        labelLatexSource: this._escapeHTML(
+          this._t("texlink-note-label-latex-source", "LaTeX source")
+        ),
         pageLabel: this._escapeHTML(source.pageLabel),
         timestamp: this._escapeHTML(timestamp),
         sourceTitle: this._escapeHTML(source.sourceTitle),
         pdfLink: this._escapeHTML(source.pdfLink),
         itemLink: this._escapeHTML(source.itemLink),
+        confidence: (() => {
+          const value = Number(confidence);
+          return Number.isFinite(value) ? Math.max(0, Math.min(1, value)).toFixed(3) : "";
+        })(),
         commentBlock
       };
 
@@ -1713,7 +2024,10 @@ var TexLinkService = (function () {
     async _findOrCreateLogNote(sourceItem) {
       const library = Zotero.Libraries.get(sourceItem.libraryID);
       if (!library?.editable) {
-        throw new Error("The library containing this item is read-only; cannot create or modify notes");
+        throw new Error(this._t(
+          "texlink-error-readonly-library",
+          "The library containing this item is read-only; cannot create or modify notes."
+        ));
       }
 
       const tag = String(this._getPref("logNoteTag", DEFAULT_LOG_TAG) || DEFAULT_LOG_TAG);
@@ -1727,7 +2041,18 @@ var TexLinkService = (function () {
         }
       }
 
-      const title = String(this._getPref("logNoteTitle", DEFAULT_LOG_TITLE) || DEFAULT_LOG_TITLE);
+      let title;
+      try {
+        const hasCustomTitle = Zotero.Prefs.prefHasUserValue(
+          `${PREF_PREFIX}.logNoteTitle`
+        );
+        title = hasCustomTitle
+          ? String(this._getPref("logNoteTitle", DEFAULT_LOG_TITLE) || DEFAULT_LOG_TITLE)
+          : this.getDefaultLogNoteTitle();
+      }
+      catch (error) {
+        title = this.getDefaultLogNoteTitle();
+      }
       const note = new Zotero.Item("note");
       note.libraryID = sourceItem.libraryID;
       note.parentID = sourceItem.id;
@@ -1739,7 +2064,10 @@ var TexLinkService = (function () {
       note.setNote(
         `<div data-schema-version="${NOTE_SCHEMA_VERSION}">` +
         `<h2>${this._escapeHTML(title)}</h2>` +
-        `<p>This note was created automatically by TexLink. Each formula block contains a local KaTeX preview, LaTeX source, page label, and ISO timestamp.</p>` +
+        `<p>${this._escapeHTML(this._t(
+          "texlink-note-intro",
+          "This note was created automatically by TexLink. Each formula block contains a local KaTeX preview, LaTeX source, page label, and ISO timestamp."
+        ))}</p>` +
         `</div>`
       );
       note.setTags([{ tag }]);
@@ -1761,7 +2089,16 @@ var TexLinkService = (function () {
       const target = await this._resolveNoteTarget(source.regularItem);
       const noteItem = target.noteItem;
       if (!noteItem?.isEditable?.()) {
-        throw new Error("Target note is not editable (it may be in a read-only library or the trash)");
+        throw new Error(this._t(
+          "texlink-error-target-readonly",
+          "Target note is not editable (it may be in a read-only library or the trash)."
+        ));
+      }
+
+      if (this._noteHasEntry(noteItem, entryId)) {
+        this._log(`duplicate entry ${entryId}; skipping`);
+        await this._diag("duplicate-skip", entryId);
+        return { noteItem, duplicate: true };
       }
 
       await this._diag("write-target", target.editorInstance ? "live-editor" : "item-save");
@@ -1776,14 +2113,25 @@ var TexLinkService = (function () {
             try { target.editorInstance.saveSync(); } catch (e) { /* noop */ }
             await this._waitForNoteText(noteItem, timestamp, 1500);
           }
-          return noteItem;
+          return { noteItem, duplicate: false };
         }
       }
 
       await this._diag("append-direct-start");
       await this._appendEntryDirectly(noteItem, html);
       await this._diag("append-direct-done");
-      return noteItem;
+      return { noteItem, duplicate: false };
+    }
+
+    _noteHasEntry(noteItem, entryId) {
+      try {
+        return String(noteItem.getNote() || "").includes(
+          `data-texlink-entry="${entryId}"`
+        );
+      }
+      catch (error) {
+        return false;
+      }
     }
 
     _insertIntoOpenEditor(editorInstance, html) {
@@ -1844,13 +2192,14 @@ var TexLinkService = (function () {
      * SIGSEGV in the main Zotero process after choosing a menu item. The toast
      * is just a fixed div in the Reader document and never opens a native window.
      */
-    _newProgress(text, reader) {
+    _newProgress(text, reader, options = {}) {
       try {
         const win = reader?._iframeWindow;
         const doc = win?.document;
         if (!doc?.body) return null;
         let el = doc.getElementById("texlink-toast");
-        if (!el) {
+        if (!el || !el.__texlinkText) {
+          if (el) el.remove();
           el = doc.createElement("div");
           el.id = "texlink-toast";
           el.setAttribute("role", "status");
@@ -1859,26 +2208,62 @@ var TexLinkService = (function () {
             "right: 20px",
             "bottom: 20px",
             "z-index: 2147483647",
-            "max-width: 420px",
+            "display: flex",
+            "align-items: center",
+            "gap: 10px",
+            "max-width: 460px",
             "padding: 10px 14px",
             "border-radius: 8px",
             "background: rgba(36, 36, 36, 0.94)",
             "color: #fff",
             "font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
             "box-shadow: 0 6px 24px rgba(0,0,0,0.35)",
-            "white-space: pre-wrap",
-            "word-break: break-word",
             "pointer-events: none",
             "opacity: 0",
             "transition: opacity 0.15s ease"
           ].join(";");
+          const textEl = doc.createElement("span");
+          textEl.style.cssText = "flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word;";
+          const cancelButton = doc.createElement("button");
+          cancelButton.type = "button";
+          cancelButton.textContent = this._t("texlink-progress-cancel", "Cancel");
+          cancelButton.style.cssText = [
+            "pointer-events: auto",
+            "border: 1px solid rgba(255,255,255,0.45)",
+            "border-radius: 5px",
+            "background: transparent",
+            "color: #fff",
+            "font: inherit",
+            "padding: 2px 8px",
+            "cursor: pointer",
+            "display: none"
+          ].join(";");
+          el.appendChild(textEl);
+          el.appendChild(cancelButton);
+          el.__texlinkText = textEl;
+          el.__texlinkCancel = cancelButton;
           doc.body.appendChild(el);
         }
         clearTimeout(el.__texlinkTimer);
-        el.textContent = text;
+        el.__texlinkText.textContent = text;
         el.style.background = "rgba(36, 36, 36, 0.94)";
         el.style.opacity = "1";
-        const handle = { el };
+        const handle = { el, textEl: el.__texlinkText, cancelButton: el.__texlinkCancel };
+        if (options.cancellable && typeof options.onCancel === "function") {
+          handle.onCancel = options.onCancel;
+          handle.cancelButton.style.display = "inline-block";
+          handle.cancelButton.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const callback = handle.onCancel;
+            handle.cancelButton.style.display = "none";
+            if (callback) callback();
+          };
+        }
+        else {
+          handle.cancelButton.style.display = "none";
+          handle.cancelButton.onclick = null;
+        }
         this._toasts.add(handle);
         return handle;
       }
@@ -1891,7 +2276,7 @@ var TexLinkService = (function () {
     _setProgress(progress, percent, text, isError = false) {
       if (!progress?.el) return;
       try {
-        if (text) progress.el.textContent = text;
+        if (text) progress.textEl.textContent = text;
         progress.el.style.background = isError
           ? "rgba(150, 30, 30, 0.96)"
           : "rgba(36, 36, 36, 0.94)";
@@ -1905,9 +2290,13 @@ var TexLinkService = (function () {
     _closeProgress(progress, delayMs = 5000) {
       if (!progress?.el) return;
       try {
+        if (progress.cancelButton) progress.cancelButton.style.display = "none";
         clearTimeout(progress.el.__texlinkTimer);
         progress.el.__texlinkTimer = setTimeout(() => {
-          try { progress.el.style.opacity = "0"; } catch (e) { /* dead doc */ }
+          try {
+            if (progress.cancelButton) progress.cancelButton.style.display = "none";
+            progress.el.style.opacity = "0";
+          } catch (e) { /* dead doc */ }
           this._toasts.delete(progress);
         }, delayMs);
       }
@@ -1927,13 +2316,62 @@ var TexLinkService = (function () {
       this._toasts.clear();
     }
 
+    _cancelRecognition() {
+      if (!this._busy) return;
+      this._cancelRequested = true;
+      const progress = this._activeProgress;
+      const error = new Error("Recognition canceled");
+      this._log("recognition canceled by user");
+      this._diag("recognition-cancel-requested");
+      this._abortWorker(error);
+      this._setProgress(progress, null, this._t("texlink-progress-canceled", "Canceled"), true);
+      this._closeProgress(progress, 1500);
+    }
+
     _showError(error, reader = null) {
-      const message = String(error?.message || error || "Unknown error");
+      const message = String(
+        error?.message || error || this._t("texlink-error-unknown", "Unknown error")
+      );
       this._logError("user-visible error", error);
       this._diag("show-error", message);
       const progress = this._newProgress(message, reader);
-      this._setProgress(progress, null, message, true);
-      this._closeProgress(progress, 10000);
+      if (progress) {
+        this._setProgress(progress, null, message, true);
+        this._closeProgress(progress, 10000);
+        return;
+      }
+      this._showFallbackError(message);
+    }
+
+    /**
+     * No-reader errors cannot use the Reader toast. Show a deferred native
+     * progress window from the main Zotero window only; reader context-menu
+     * commands always have a reader and continue to use the in-reader toast.
+     */
+    _showFallbackError(message) {
+      setTimeout(() => {
+        try {
+          if (this._fallbackErrorWindow) {
+            try { this._fallbackErrorWindow.close(); } catch (e) { /* noop */ }
+            this._fallbackErrorWindow = null;
+          }
+          const progress = new Zotero.ProgressWindow({ closeOnClick: true });
+          progress.changeHeadline("TexLink");
+          progress.progress = new progress.ItemProgress("note", message);
+          progress.progress.setError();
+          progress.show();
+          progress.startCloseTimer(10000);
+          this._fallbackErrorWindow = progress;
+          setTimeout(() => {
+            if (this._fallbackErrorWindow === progress) {
+              this._fallbackErrorWindow = null;
+            }
+          }, 11000);
+        }
+        catch (error) {
+          this._logError("Failed to show fallback error window", error);
+        }
+      }, 0);
     }
 
     async _promptComment() {
@@ -1943,8 +2381,11 @@ var TexLinkService = (function () {
         const value = { value: "" };
         const accepted = Services.prompt.prompt(
           win,
-          "TexLink Comment",
-          "Optional comment (leave blank to skip; Cancel aborts this recognition):",
+          this._t("texlink-prompt-title", "TexLink Comment"),
+          this._t(
+            "texlink-prompt-message",
+            "Optional comment (leave blank to skip; Cancel aborts this recognition):"
+          ),
           value,
           null,
           {}
