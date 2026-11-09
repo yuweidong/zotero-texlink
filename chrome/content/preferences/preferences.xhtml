@@ -1,0 +1,279 @@
+<linkset>
+  <html:link rel="localization" href="texlink.ftl" />
+</linkset>
+<vbox
+  id="texlink-prefpane"
+  xmlns:html="http://www.w3.org/1999/xhtml"
+  onload="Zotero.TexLinkPrefs &amp;&amp; Zotero.TexLinkPrefs.init(window)"
+>
+  <html:div class="texlink-pref-hero">
+    <html:img
+      class="texlink-pref-hero-icon"
+      src="chrome://zotero-texlink/content/icons/texlink-prefs.svg"
+      alt=""
+    />
+    <html:div class="texlink-pref-hero-copy">
+      <html:div class="texlink-pref-hero-title" data-l10n-id="texlink-pref-title">TexLink</html:div>
+      <html:div class="texlink-pref-hero-subtitle" data-l10n-id="texlink-pref-tagline">
+        Structured formula anchors for Zotero
+      </html:div>
+    </html:div>
+  </html:div>
+
+  <html:div class="texlink-pref-intro">
+    <html:p data-l10n-id="texlink-pref-intro">
+      TexLink turns native PDF image annotations into traceable formula blocks
+      in Zotero notes. Recognition runs locally in a Web Worker and never uses
+      an external OCR service or LLM.
+    </html:p>
+    <html:p class="texlink-pref-hint" data-l10n-id="texlink-pref-restart-note">
+      Changes are saved immediately. The master switch and startup warmup take
+      effect after the next Zotero restart.
+    </html:p>
+  </html:div>
+
+  <groupbox class="texlink-pref-card">
+    <label><html:h2 data-l10n-id="texlink-pref-general">General</html:h2></label>
+
+    <html:div class="texlink-pref-row">
+      <html:input
+        class="texlink-pref-checkbox"
+        type="checkbox"
+        id="texlink-pref-enabled"
+      />
+      <html:label for="texlink-pref-enabled" data-l10n-id="texlink-pref-enable">Enable TexLink</html:label>
+    </html:div>
+    <html:div class="texlink-pref-hint" data-l10n-id="texlink-pref-enable-hint">
+      Turning this off unregisters TexLink after the next Zotero restart.
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:input
+        class="texlink-pref-checkbox"
+        type="checkbox"
+        id="texlink-pref-warmup"
+      />
+      <html:label for="texlink-pref-warmup" data-l10n-id="texlink-pref-warmup">
+        Load and warm up the model on startup
+      </html:label>
+    </html:div>
+    <html:div class="texlink-pref-hint" data-l10n-id="texlink-pref-warmup-hint">
+      Warmup happens in the Worker and keeps the first recognition request fast.
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:input
+        class="texlink-pref-checkbox"
+        type="checkbox"
+        id="texlink-pref-open-note"
+      />
+      <html:label for="texlink-pref-open-note" data-l10n-id="texlink-pref-open-note">
+        Open the destination note after writing
+      </html:label>
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:input
+        class="texlink-pref-checkbox"
+        type="checkbox"
+        id="texlink-pref-prompt-comment"
+      />
+      <html:label for="texlink-pref-prompt-comment" data-l10n-id="texlink-pref-prompt-comment">
+        Ask for an optional comment before recognition
+      </html:label>
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:input
+        class="texlink-pref-checkbox"
+        type="checkbox"
+        id="texlink-pref-auto-process"
+      />
+      <html:label for="texlink-pref-auto-process" data-l10n-id="texlink-pref-auto-process">
+        Process new image annotations automatically
+      </html:label>
+    </html:div>
+    <html:div class="texlink-pref-hint" data-l10n-id="texlink-pref-auto-process-hint">
+      This is off by default because diagrams and other non-formula images can
+      also be annotations.
+    </html:div>
+  </groupbox>
+
+  <groupbox class="texlink-pref-card">
+    <label><html:h2 data-l10n-id="texlink-pref-recognition">Recognition</html:h2></label>
+
+    <html:div class="texlink-pref-row">
+      <html:label class="texlink-pref-label" for="texlink-pref-max-tokens" data-l10n-id="texlink-pref-max-tokens">
+        Maximum generated tokens
+      </html:label>
+      <html:input
+        class="texlink-pref-number"
+        type="number"
+        id="texlink-pref-max-tokens"
+        min="1"
+        max="512"
+        step="1"
+      />
+    </html:div>
+    <html:div class="texlink-pref-hint" data-l10n-id="texlink-pref-max-tokens-hint">
+      Pix2Text-MFR supports at most 512 tokens. Longer formulas can be cut off.
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:input
+        class="texlink-pref-checkbox"
+        type="checkbox"
+        id="texlink-pref-binarize"
+      />
+      <html:label for="texlink-pref-binarize" data-l10n-id="texlink-pref-binarize">
+        Apply Otsu binarization before inference
+      </html:label>
+    </html:div>
+    <html:div class="texlink-pref-hint" data-l10n-id="texlink-pref-binarize-hint">
+      Usually off. The model was trained on natural grayscale images, so
+      binarization can reduce accuracy.
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:label class="texlink-pref-label" for="texlink-pref-shortcut" data-l10n-id="texlink-pref-shortcut">
+        Keyboard shortcut
+      </html:label>
+      <html:input
+        class="texlink-pref-input"
+        type="text"
+        id="texlink-pref-shortcut"
+        spellcheck="false"
+      />
+    </html:div>
+    <html:div class="texlink-pref-hint" data-l10n-id="texlink-pref-shortcut-hint">
+      Comma-separated. Use accel for Cmd on macOS and Ctrl elsewhere. Example:
+      accel,shift,L
+    </html:div>
+  </groupbox>
+
+  <groupbox class="texlink-pref-card">
+    <label><html:h2 data-l10n-id="texlink-pref-note-destination">Note destination</html:h2></label>
+
+    <html:div class="texlink-pref-row">
+      <html:label class="texlink-pref-label" for="texlink-pref-note-target" data-l10n-id="texlink-pref-note-target">
+        Where to write formula blocks
+      </html:label>
+      <html:select class="texlink-pref-select" id="texlink-pref-note-target">
+        <html:option value="auto" data-l10n-id="texlink-pref-note-target-auto">
+          Auto: current note for this item, otherwise the dedicated note
+        </html:option>
+        <html:option value="active" data-l10n-id="texlink-pref-note-target-active">
+          Active: prefer the open note, otherwise the dedicated note
+        </html:option>
+        <html:option value="dedicated" data-l10n-id="texlink-pref-note-target-dedicated">
+          Dedicated: always use the dedicated note
+        </html:option>
+      </html:select>
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:label class="texlink-pref-label" for="texlink-pref-log-tag" data-l10n-id="texlink-pref-log-tag">
+        Dedicated note tag
+      </html:label>
+      <html:input
+        class="texlink-pref-input"
+        type="text"
+        id="texlink-pref-log-tag"
+      />
+    </html:div>
+    <html:div class="texlink-pref-hint" data-l10n-id="texlink-pref-log-tag-hint">
+      Used to find the same note across multiple extractions. Avoid deleting
+      this tag from the note.
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:label class="texlink-pref-label" for="texlink-pref-log-title" data-l10n-id="texlink-pref-log-title">
+        Dedicated note title
+      </html:label>
+      <html:input
+        class="texlink-pref-input"
+        type="text"
+        id="texlink-pref-log-title"
+      />
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:label class="texlink-pref-label" for="texlink-pref-max-comment" data-l10n-id="texlink-pref-max-comment">
+        Maximum comment length
+      </html:label>
+      <html:input
+        class="texlink-pref-number"
+        type="number"
+        id="texlink-pref-max-comment"
+        min="1"
+        max="10000"
+        step="1"
+      />
+    </html:div>
+  </groupbox>
+
+  <groupbox class="texlink-pref-card">
+    <label><html:h2 data-l10n-id="texlink-pref-template">Formula block template</html:h2></label>
+    <html:p class="texlink-pref-hint" data-l10n-id="texlink-pref-template-hint">
+      The template must contain the LaTeX source and page-label placeholders.
+      Blocks use Zotero's native math node. Do not add scripts, remote images,
+      or event handlers; unsafe templates fall back to the built-in template.
+    </html:p>
+
+    <html:textarea
+      class="texlink-pref-textarea"
+      id="texlink-pref-note-template"
+      rows="12"
+      spellcheck="false"
+    ></html:textarea>
+
+    <html:div class="texlink-pref-actions">
+      <html:button type="button" id="texlink-pref-reset-template" data-l10n-id="texlink-pref-restore-template">
+        Restore Default Template
+      </html:button>
+    </html:div>
+  </groupbox>
+
+  <groupbox class="texlink-pref-card">
+    <label><html:h2 data-l10n-id="texlink-pref-advanced">Advanced</html:h2></label>
+
+    <html:div class="texlink-pref-row">
+      <html:input
+        class="texlink-pref-checkbox"
+        type="checkbox"
+        id="texlink-pref-debug"
+      />
+      <html:label for="texlink-pref-debug" data-l10n-id="texlink-pref-debug">
+        Write detailed Worker messages to the Zotero debug output
+      </html:label>
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:input
+        class="texlink-pref-checkbox"
+        type="checkbox"
+        id="texlink-pref-diagnostic"
+      />
+      <html:label for="texlink-pref-diagnostic" data-l10n-id="texlink-pref-diagnostic">
+        Write recognition-stage breadcrumbs to texlink-crash.log
+      </html:label>
+    </html:div>
+    <html:div class="texlink-pref-hint" data-l10n-id="texlink-pref-diagnostic-hint">
+      The log is written to the system temporary directory. Leave this off
+      unless you are diagnosing a crash.
+    </html:div>
+
+    <html:div class="texlink-pref-actions">
+      <html:button type="button" id="texlink-pref-reset-all" data-l10n-id="texlink-pref-reset-all">
+        Reset All TexLink Preferences
+      </html:button>
+    </html:div>
+  </groupbox>
+
+  <html:div
+    id="texlink-pref-status"
+    class="texlink-pref-status"
+    role="status"
+    aria-live="polite"
+  ></html:div>
+</vbox>
