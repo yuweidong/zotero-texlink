@@ -20,6 +20,7 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
+ZIP_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
 LOCALE_SOURCE = ROOT / "addon/locale"
 INCLUDE_DIRS = [
     "chrome/content",
@@ -103,10 +104,24 @@ def main() -> None:
     for path, rel in files:
         path.resolve().relative_to(ROOT.resolve())
 
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+    def add_file(zf: zipfile.ZipFile, path: pathlib.Path, rel: str) -> None:
+        # Normalize every ZIP metadata field that can vary between checkouts
+        # or machines. Without this, file mtimes and permission bits make the
+        # XPI SHA256 change even when the contents are identical.
+        info = zipfile.ZipInfo(rel, date_time=ZIP_TIMESTAMP)
+        info.create_system = 3
+        info.external_attr = 0o100644 << 16
+        # Store entries uncompressed. DEFLATE output can differ between zlib
+        # versions (macOS 1.2.x vs Ubuntu 1.3.x), which would make the XPI
+        # SHA256 depend on the machine that built it. Stored entries plus the
+        # normalized metadata above make the archive byte-for-byte stable.
+        info.compress_type = zipfile.ZIP_STORED
+        zf.writestr(info, path.read_bytes())
+
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as zf:
         # Keep manifest.json first so the archive layout is easy to inspect.
         manifest_entry = next(item for item in files if item[1] == "manifest.json")
-        zf.write(manifest_entry[0], manifest_entry[1])
+        add_file(zf, manifest_entry[0], manifest_entry[1])
 
         # Some older ZIP readers and AddonManager versions expect explicit
         # directory entries. They are not required by Zotero, but they improve
@@ -119,8 +134,8 @@ def main() -> None:
                 parent = parent.parent
         directories = sorted(directories)
         for directory in directories:
-            # Fixed timestamps make repeated builds of the same tree hashable.
-            info = zipfile.ZipInfo(directory + "/", date_time=(2026, 1, 1, 0, 0, 0))
+            info = zipfile.ZipInfo(directory + "/", date_time=ZIP_TIMESTAMP)
+            info.create_system = 3
             info.external_attr = (0o40755 << 16) | 0x10
             info.compress_type = zipfile.ZIP_STORED
             zf.writestr(info, b"")
@@ -128,7 +143,7 @@ def main() -> None:
         for path, rel in sorted(files, key=lambda item: item[1]):
             if rel == "manifest.json":
                 continue
-            zf.write(path, rel)
+            add_file(zf, path, rel)
 
     size_mb = output.stat().st_size / 1024 / 1024
     digest = sha256(output)
