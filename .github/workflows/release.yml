@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check tag, manifest, and update entry
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="$TAG_VERSION" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          version = os.environ["TAG_VERSION"]
+          manifest = json.loads(Path("manifest.json").read_text(encoding="utf-8"))
+          if manifest["version"] != version:
+              raise SystemExit(
+                  f"Tag version {version} does not match manifest version {manifest['version']}"
+              )
+
+          document = json.loads(Path("updates.json").read_text(encoding="utf-8"))
+          plugin = document["addons"]["zotero-texlink@yuweidong.dev"]
+          entries = plugin["updates"]
+          if not isinstance(entries, list):
+              raise SystemExit("updates.json updates field is not an array")
+
+          entry = next(
+              (item for item in entries if item.get("version") == version), None
+          )
+          if not entry:
+              raise SystemExit(f"updates.json has no entry for {version}")
+          if not str(entry.get("update_hash", "")).startswith("sha256:"):
+              raise SystemExit(
+                  f"updates.json entry for {version} has no sha256 update_hash"
+              )
+          print(f"Release metadata checks passed for {version}")
+          PY
+
+      - name: Verify assets
+        run: python3 tools/verify_assets.py
+
+      - name: Run decoder test
+        run: node tests/tokenizer_decode.test.js
+
+      - name: Run service helper tests
+        run: node tests/service_helpers.test.js
+
+      - name: Build XPI
+        run: python3 tools/build_xpi.py
+
+      - name: Verify XPI hash against update manifest
+        run: python3 tools/verify_assets.py
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/zotero-texlink-*.xpi dist/zotero-texlink-*.sha256 --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/zotero-texlink-*.xpi dist/zotero-texlink-*.sha256 --generate-notes
+          fi
