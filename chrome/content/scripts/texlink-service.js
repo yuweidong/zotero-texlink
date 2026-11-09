@@ -1260,7 +1260,18 @@ var TexLinkService = (function () {
       const menuitem = doc.createXULElement("menuitem");
       menuitem.id = "texlink-tools-menuitem";
       menuitem.setAttribute("class", "menuitem-iconic");
-      menuitem.setAttribute("image", `${this.chromeBase}icons/texlink-prefs.png`);
+      const iconURL = `${this.chromeBase}icons/texlink-tools.png`;
+      menuitem.setAttribute("image", iconURL);
+
+      // The legacy "image" attribute is not painted by Zotero 10's Tools menu.
+      // Use a scoped rule instead of Zotero's custom-menu class, which is
+      // reserved for dynamically managed menus.
+      const iconStyle = doc.createElement("style");
+      iconStyle.id = "texlink-tools-icon-style";
+      iconStyle.textContent =
+        `#texlink-tools-menuitem { list-style-image: url("${iconURL}") !important; }`;
+      doc.getElementById("texlink-tools-icon-style")?.remove();
+      doc.documentElement.appendChild(iconStyle);
       menuitem.setAttribute(
         "label",
         this._t("texlink-menu-tools", "TexLink: Recognize Selected Formula Screenshot")
@@ -1289,6 +1300,7 @@ var TexLinkService = (function () {
         try { menuitem.removeEventListener("command", handler); } catch (e) { /* noop */ }
         separator.remove();
         menuitem.remove();
+        iconStyle.remove();
       });
     }
 
