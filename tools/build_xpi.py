@@ -111,14 +111,10 @@ def main() -> None:
         info = zipfile.ZipInfo(rel, date_time=ZIP_TIMESTAMP)
         info.create_system = 3
         info.external_attr = 0o100644 << 16
-        # Store entries uncompressed. DEFLATE output can differ between zlib
-        # versions (macOS 1.2.x vs Ubuntu 1.3.x), which would make the XPI
-        # SHA256 depend on the machine that built it. Stored entries plus the
-        # normalized metadata above make the archive byte-for-byte stable.
-        info.compress_type = zipfile.ZIP_STORED
-        zf.writestr(info, path.read_bytes())
+        info.compress_type = zipfile.ZIP_DEFLATED
+        zf.writestr(info, path.read_bytes(), compresslevel=9)
 
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as zf:
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         # Keep manifest.json first so the archive layout is easy to inspect.
         manifest_entry = next(item for item in files if item[1] == "manifest.json")
         add_file(zf, manifest_entry[0], manifest_entry[1])
