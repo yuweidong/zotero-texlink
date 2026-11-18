@@ -50,7 +50,7 @@ vm.runInContext(
 
 const service = new context.TexLinkService({
   id: "zotero-texlink@yuweidong.dev",
-  version: "0.1.4",
+  version: "0.1.5",
   rootURI: "file:///test/"
 });
 const source = {
@@ -60,6 +60,19 @@ const source = {
   pdfLink: "zotero://open-pdf/library/items/PDFKEY?page=12&annotation=ABCD1234",
   itemLink: "zotero://select/library/items/ITEMKEY"
 };
+
+const noisyLatex =
+  "F _ { t } = f _ { \\mathrm { e n c } } ( I _ { t } ) , \\quad " +
+  "[ z _ { t } ^ { \\prime } , F _ { t } ^ { \\prime } ] , " +
+  "s _ { t } = f _ { \\mathrm { d e c } } ( [ z , F _ { t } ] , s _ { t - 1 } )";
+const compactLatex =
+  "F_{t}=f_{\\mathrm{enc}}(I_{t}),\\quad" +
+  "[z_{t}^{\\prime},F_{t}^{\\prime}],s_{t}=f_{\\mathrm{dec}}([z,F_{t}],s_{t-1})";
+assert.strictEqual(service._compactLatexSpacing(noisyLatex), compactLatex);
+assert.strictEqual(service._compactLatexSpacing("\\alpha x"), "\\alpha{}x");
+assert.strictEqual(service._compactLatexSpacing("\\text{a b} + c"), "\\text{a b}+c");
+assert.strictEqual(service._compactLatexSpacing("a \\, b"), "a\\,b");
+assert.strictEqual(service._compactLatexSpacing("\\frac { 1 } { 2 }"), "\\frac{1}{2}");
 
 assert.strictEqual(service._entryIdFor("ABCD1234", "x+y"), service._entryIdFor("ABCD1234", "x+y"));
 assert.notStrictEqual(service._entryIdFor("ABCD1234", "x+y"), service._entryIdFor("ABCD1234", "x-y"));
