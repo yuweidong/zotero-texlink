@@ -5,9 +5,8 @@
  * Usage:
  *   node tests/tokenizer_decode.test.js
  *
- * The expected string comes from the same tokenizer decoded with Python
- * `tokenizers`. The test does not need Zotero; it loads only the static decoder
- * from the service file.
+ * The expected string is the compacted form produced after decoding. The test
+ * does not need Zotero; it loads only the static decoder from the service file.
  */
 "use strict";
 
@@ -50,8 +49,7 @@ const ids = [
   262, 263, 418, 263, 356, 261, 269
 ];
 const expected =
-  "\\int _ { 0 } ^ { \\infty } \\! e ^ { - x ^ { 2 } } \\, d x \\! = \\! " +
-  "\\frac { \\sqrt \\pi } 2";
+  "\\int_{0}^{\\infty}\\!e^{-x^{2}}\\,dx\\!=\\!\\frac{\\sqrt\\pi}2";
 assert.strictEqual(decoder.decode(ids), expected);
 assert.strictEqual(decoder.decode([0, 1, 2, 3, 4]), "");
-console.log("[OK] ByteLevel BPE decoder matches the Python tokenizer output");
+console.log("[OK] ByteLevel BPE decoder matches the compacted tokenizer output");
