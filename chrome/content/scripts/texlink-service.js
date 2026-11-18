@@ -61,6 +61,124 @@ var TexLinkService = (function () {
   ].join("\n");
 
   /**
+   * Remove cosmetic tokenizer whitespace from a LaTeX string.
+   *
+   * Pix2Text-MFR's tokenizer emits spaces between many LaTeX tokens, producing
+   * source such as "F _ { t } = f _ { \\mathrm { e n c } }". Those spaces are
+   * not part of the formula. This pass removes whitespace outside text groups,
+   * keeps explicit spacing commands and \text{...} content, and inserts an
+   * empty group after a control word when removing the space would otherwise
+   * merge it with a following letter ("\alpha x" -> "\alpha{}x").
+   *
+   * @param {string} text
+   * @returns {string}
+   */
+  function compactLatexSpacing(text) {
+    const source = String(text || "");
+    let output = "";
+    let index = 0;
+    let pendingSpace = false;
+    let lastWasControlWord = false;
+    let textMode = false;
+    let textDepth = 0;
+    let textCommandPending = false;
+    const textCommands = new Set([
+      "text", "textrm", "textnormal", "textit", "textbf", "textsf", "texttt",
+      "mbox", "hbox"
+    ]);
+
+    while (index < source.length) {
+      const ch = source[index];
+
+      if (/\s/.test(ch)) {
+        pendingSpace = true;
+        index++;
+        continue;
+      }
+
+      // A text command only enters text mode if its next non-space token is "{".
+      if (textCommandPending && ch !== "{") {
+        textCommandPending = false;
+      }
+
+      if (ch === "\\") {
+        const next = source[index + 1] || "";
+        if (/[A-Za-z]/.test(next)) {
+          let end = index + 1;
+          while (end < source.length && /[A-Za-z]/.test(source[end])) end++;
+          const name = source.slice(index + 1, end);
+          output += "\\" + name;
+          lastWasControlWord = true;
+          pendingSpace = false;
+          index = end;
+          if (textCommands.has(name)) textCommandPending = true;
+          continue;
+        }
+
+        // Control symbol, including "\ " (an explicit math space).
+        output += "\\" + next;
+        lastWasControlWord = false;
+        pendingSpace = false;
+        index += 2;
+        continue;
+      }
+
+      if (ch === "{") {
+        output += "{";
+        if (textCommandPending) {
+          if (textMode) textDepth++;
+          else {
+            textMode = true;
+            textDepth = 1;
+          }
+          textCommandPending = false;
+        }
+        else if (textMode) {
+          textDepth++;
+        }
+        lastWasControlWord = false;
+        pendingSpace = false;
+        index++;
+        continue;
+      }
+
+      if (ch === "}") {
+        output += "}";
+        if (textMode) {
+          textDepth--;
+          if (textDepth <= 0) {
+            textMode = false;
+            textDepth = 0;
+          }
+        }
+        lastWasControlWord = false;
+        pendingSpace = false;
+        index++;
+        continue;
+      }
+
+      if (textMode) {
+        if (pendingSpace) output += " ";
+        pendingSpace = false;
+        output += ch;
+        lastWasControlWord = false;
+        index++;
+        continue;
+      }
+
+      if (pendingSpace && lastWasControlWord && /[\p{L}]/u.test(ch)) {
+        output += "{}";
+      }
+      pendingSpace = false;
+      output += ch;
+      lastWasControlWord = false;
+      index++;
+    }
+
+    return output.trim();
+  }
+
+  /**
    * ByteLevel BPE decoder.
    *
    * Pix2Text-MFR's tokenizer.json uses the HuggingFace tokenizers BPE layout:
@@ -224,7 +342,8 @@ var TexLinkService = (function () {
      * - strip BOM/control characters;
      * - strip Markdown code fences the model occasionally emits;
      * - strip outer $ / $$ wrappers (the math node adds its own);
-     * - collapse newlines and trim leading/trailing whitespace.
+     * - remove tokenizer-inserted cosmetic whitespace outside text groups;
+     * - preserve explicit spacing commands and \text{...} content.
      *
      * No speculative operations such as "auto-close brackets" or
      * "rewrite commands".
@@ -249,19 +368,19 @@ var TexLinkService = (function () {
         output = output.slice(1, -1).trim();
       }
 
-      // Collapse consecutive newlines into spaces only; leave ordinary spaces
-      // untouched so \text{...} is not corrupted.
-      output = output.replace(/\n+/g, " ").trim();
-      return output;
+      // Remove tokenizer-inserted cosmetic spaces while preserving text groups
+      // and explicit spacing commands.
+      return compactLatexSpacing(output);
     }
   }
 
   class Service {
     constructor(options = {}) {
       this.id = options.id || PLUGIN_ID;
-      this.version = options.version || "0.1.4";
+      this.version = options.version || "0.1.5";
       this.rootURI = options.rootURI || "";
       this.chromeBase = options.chromeBase || `chrome://${CHROME_NAME}/content/`;
+      this._compactLatexSpacing = compactLatexSpacing;
 
       this._started = false;
       this._destroyed = false;
@@ -1262,16 +1381,9 @@ var TexLinkService = (function () {
       menuitem.setAttribute("class", "menuitem-iconic");
       const iconURL = `${this.chromeBase}icons/texlink-tools.png`;
       menuitem.setAttribute("image", iconURL);
-
-      // The legacy "image" attribute is not painted by Zotero 10's Tools menu.
-      // Use a scoped rule instead of Zotero's custom-menu class, which is
-      // reserved for dynamically managed menus.
-      const iconStyle = doc.createElement("style");
-      iconStyle.id = "texlink-tools-icon-style";
-      iconStyle.textContent =
-        `#texlink-tools-menuitem { list-style-image: url("${iconURL}") !important; }`;
-      doc.getElementById("texlink-tools-icon-style")?.remove();
-      doc.documentElement.appendChild(iconStyle);
+      // The legacy image attribute is not painted consistently by Zotero 10.
+      // Apply list-style-image inline; this keeps the native Tools menu intact.
+      menuitem.style.setProperty("list-style-image", `url("${iconURL}")`, "important");
       menuitem.setAttribute(
         "label",
         this._t("texlink-menu-tools", "TexLink: Recognize Selected Formula Screenshot")
@@ -1300,7 +1412,6 @@ var TexLinkService = (function () {
         try { menuitem.removeEventListener("command", handler); } catch (e) { /* noop */ }
         separator.remove();
         menuitem.remove();
-        iconStyle.remove();
       });
     }
 
