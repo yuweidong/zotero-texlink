@@ -27,40 +27,7 @@
   line-height: 1.45;
 }
 
-.texlink-pref-hero {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin: 0 0 16px 0;
-  padding: 16px 18px;
-  border: 1px solid rgba(45, 91, 209, 0.28);
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(45, 91, 209, 0.14), rgba(45, 91, 209, 0.04));
-}
 
-.texlink-pref-hero-icon {
-  width: 52px;
-  height: 52px;
-  flex: 0 0 52px;
-  border-radius: 12px;
-  box-shadow: 0 4px 14px rgba(45, 91, 209, 0.22);
-}
-
-.texlink-pref-hero-copy {
-  min-width: 0;
-}
-
-.texlink-pref-hero-title {
-  font-size: 19px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.texlink-pref-hero-subtitle {
-  margin-top: 3px;
-  opacity: 0.75;
-  font-size: 12.5px;
-}
 
 .texlink-pref-intro {
   margin: 0 0 14px 0;
