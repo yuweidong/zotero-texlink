@@ -648,7 +648,8 @@ var TexLinkService = (function () {
           pluginID: this.id,
           id: "texlink-preferences",
           label: "TexLink",
-          image: `${this.chromeBase}icons/texlink-prefs.png`,
+          // Let Zotero use the add-on's manifest icon. The manifest fallback is
+          // the most reliable path across Windows, macOS, and Linux.
           src: `${this.chromeBase}preferences/preferences.xhtml`,
           scripts: [`${this.chromeBase}preferences/preferences.js`],
           stylesheets: [`${this.chromeBase}preferences/preferences.css`]
