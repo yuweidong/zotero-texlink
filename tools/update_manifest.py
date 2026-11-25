@@ -10,7 +10,7 @@ Usage:
 
 Bump `version` in manifest.json before running this script. The script verifies
 the manifest update URL, adds or replaces the version entry, and writes a
-direct GitHub release asset URL.
+ghProxy-mirrored GitHub release asset URL (reachable from mainland China).
 
 A sha256 update_hash is included by default (the XPI build normalizes ZIP
 metadata and is reproducible). Use --no-hash only for the first pass of a
@@ -31,7 +31,7 @@ UPDATES = ROOT / "updates.json"
 PLUGIN_ID = "zotero-texlink@yuweidong.dev"
 DEFAULT_REPO = "yuweidong/zotero-texlink"
 EXPECTED_UPDATE_URL = (
-    f"https://raw.githubusercontent.com/{DEFAULT_REPO}/main/updates.json"
+    f"https://cdn.jsdelivr.net/gh/{DEFAULT_REPO}@main/updates.json"
 )
 
 
@@ -98,7 +98,7 @@ def main() -> None:
         )
 
     expected_update_url = (
-        f"https://raw.githubusercontent.com/{args.repo}/main/updates.json"
+        f"https://cdn.jsdelivr.net/gh/{args.repo}@main/updates.json"
     )
     if zotero.get("update_url") != expected_update_url:
         raise SystemExit(
@@ -110,7 +110,8 @@ def main() -> None:
     asset = args.asset or f"zotero-texlink-{version}.xpi"
     xpi_path = args.xpi or (ROOT / "dist" / asset)
     update_link = (
-        f"https://github.com/{args.repo}/releases/download/{tag}/{asset}"
+        f"https://gh-proxy.org/https://github.com/{args.repo}/releases/download/"
+        f"{tag}/{asset}"
     )
 
     update_hash = None

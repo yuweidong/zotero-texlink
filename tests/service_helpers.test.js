@@ -318,7 +318,7 @@ assert.ok(clip.markdown.includes("$$\nx+y\n$$"));
   context.Zotero.PreferencePanes = failingPanes;
   const failingService = new context.TexLinkService({
     id: "zotero-texlink@yuweidong.dev",
-    version: "1.0.0",
+    version: "1.0.1",
     rootURI: "file:///test/",
     chromeBase: "chrome://zotero-texlink/content/"
   });
@@ -355,7 +355,7 @@ assert.ok(clip.markdown.includes("$$\nx+y\n$$"));
   assert.ok(touched.includes("contextMenu"), "context menu initialized despite pane failure");
   assert.ok(touched.includes("notifier"), "notifier initialized despite pane failure");
 
-  console.log("[OK] service helper tests passed (v1.0.0)");
+  console.log("[OK] service helper tests passed (v1.0.1)");
 })().catch((error) => {
   console.error(error);
   process.exit(1);

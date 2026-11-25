@@ -410,7 +410,7 @@ var TexLinkService = (function () {
   class Service {
     constructor(options = {}) {
       this.id = options.id || PLUGIN_ID;
-      this.version = options.version || "1.0.0";
+      this.version = options.version || "1.0.1";
       this.rootURI = options.rootURI || "";
       this.chromeBase = options.chromeBase || `chrome://${CHROME_NAME}/content/`;
       this._compactLatexSpacing = compactLatexSpacing;

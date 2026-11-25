@@ -11,18 +11,24 @@ the XPI and is never fetched by TexLink's recognition code.
 ## Current configuration
 
 ```text
-update manifest:
-https://raw.githubusercontent.com/yuweidong/zotero-texlink/main/updates.json
+update manifest (jsDelivr CDN):
+https://cdn.jsdelivr.net/gh/yuweidong/zotero-texlink@main/updates.json
 
 release page:
-https://github.com/yuweidong/zotero-texlink/releases/tag/v1.0.0
+https://github.com/yuweidong/zotero-texlink/releases/tag/v1.0.1
 
-XPI asset:
-https://github.com/yuweidong/zotero-texlink/releases/download/v1.0.0/zotero-texlink-1.0.0.xpi
+XPI asset (ghProxy mirror):
+https://gh-proxy.org/https://github.com/yuweidong/zotero-texlink/releases/download/v1.0.1/zotero-texlink-1.0.1.xpi
 ```
 
 `updates.json` uses an **array** named `updates`. Each version is a separate
 object in that array. Do not use a `versions` object keyed by version number.
+
+Both URLs deliberately avoid GitHub's raw and release-download domains, which
+are unreliable from mainland China. jsDelivr serves the manifest from a CDN
+with domestic nodes; ghProxy forwards the release asset. jsDelivr caches
+`@main` branch files for roughly 12 hours, so a freshly published entry can
+take up to half a day to become visible to Zotero.
 
 ```json
 {
@@ -30,8 +36,8 @@ object in that array. Do not use a `versions` object keyed by version number.
     "zotero-texlink@yuweidong.dev": {
       "updates": [
         {
-          "version": "1.0.0",
-          "update_link": "https://github.com/yuweidong/zotero-texlink/releases/download/v1.0.0/zotero-texlink-1.0.0.xpi",
+          "version": "1.0.1",
+          "update_link": "https://gh-proxy.org/https://github.com/yuweidong/zotero-texlink/releases/download/v1.0.1/zotero-texlink-1.0.1.xpi",
           "update_hash": "sha256:<64-character-xpi-sha256>",
           "applications": {
             "zotero": {
@@ -52,10 +58,13 @@ The GitHub release page URL and the asset URL are different:
 
 ```text
 release page:
-https://github.com/<owner>/<repo>/releases/tag/v1.0.0
+https://github.com/<owner>/<repo>/releases/tag/v1.0.1
 
-asset download:
-https://github.com/<owner>/<repo>/releases/download/v1.0.0/<asset-name>.xpi
+asset download (direct):
+https://github.com/<owner>/<repo>/releases/download/v1.0.1/<asset-name>.xpi
+
+asset download (ghProxy mirror, used by TexLink):
+https://gh-proxy.org/https://github.com/<owner>/<repo>/releases/download/v1.0.1/<asset-name>.xpi
 ```
 
 The asset path is `/releases/download/<tag>/<asset>`, not a path containing the
@@ -65,8 +74,9 @@ release page label. The exact asset name for TexLink is:
 zotero-texlink-<version>.xpi
 ```
 
-The direct asset URL is required. A link to the HTML release page will not work
-as `update_link`.
+A direct asset URL (optionally behind the ghProxy mirror) is required. A link
+to the HTML release page will not work as `update_link`. The mirror only
+forwards bytes, so `update_hash` still validates the original XPI unchanged.
 
 ## Releasing a new version
 
@@ -131,19 +141,24 @@ not match the uploaded asset.
 Zotero uses the `update_url` from the **installed** manifest. Rebuilding a newer
 XPI does not change the update URL used by an already installed copy.
 
-The published v0.1.3+ XPIs contain the real update URL and match their release
-assets. Existing 0.1.3/0.1.4/0.1.5 users can update to v1.0.0 automatically
-once the v1.0.0 entry is live, because the versions are strictly increasing.
-Reusing the same version number will NOT trigger an update.
+The v0.1.3 - v1.0.0 XPIs contain the `raw.githubusercontent.com` update URL.
+v1.0.1 deliberately switches to the jsDelivr CDN and the ghProxy asset mirror
+because those GitHub domains are unreliable from mainland China. Because the
+URL is baked into the installed XPI, existing users must install v1.0.1 once
+by hand; every release after that updates automatically. Reusing the same
+version number will NOT trigger an update.
 
 Do not change `update_url` between ordinary releases. If you must move the
-host, publish a build containing the new URL first.
+host, publish a build containing the new URL first and tell users to install
+that build manually once.
 
 ## Hosting choices
 
-`raw.githubusercontent.com` is used because it is simple, HTTPS-only, and
-serves the file from the `main` branch. A GitHub Pages URL or another HTTPS
-host is also valid as long as:
+`cdn.jsdelivr.net/gh/<owner>/<repo>@main/updates.json` is used because it is
+HTTPS-only, has CDN nodes reachable from mainland China, and needs no extra
+hosting. jsDelivr caches `@main` branch files for roughly 12 hours, so a newly
+published update entry can take up to half a day to reach Zotero. A GitHub
+Pages URL or another HTTPS host is also valid as long as:
 
 - the `update_url` is stable and ends in `.json`;
 - the response body is valid JSON;

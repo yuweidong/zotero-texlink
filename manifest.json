@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "TexLink",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Offline formula recognition and Zotero note anchoring. Turn PDF formula screenshots into LaTeX and write traceable formula blocks into literature notes.",
   "homepage_url": "https://github.com/yuweidong/zotero-texlink",
   "author": "Weidong Yu",
@@ -14,7 +14,7 @@
       "id": "zotero-texlink@yuweidong.dev",
       "strict_min_version": "10.0",
       "strict_max_version": "10.999",
-      "update_url": "https://raw.githubusercontent.com/yuweidong/zotero-texlink/main/updates.json"
+      "update_url": "https://cdn.jsdelivr.net/gh/yuweidong/zotero-texlink@main/updates.json"
     }
   }
 }

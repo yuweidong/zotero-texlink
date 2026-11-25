@@ -19,7 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 MODEL_DIR = ROOT / "chrome/content/models"
 GITHUB_REPO = "yuweidong/zotero-texlink"
 EXPECTED_UPDATE_URL = (
-    f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/updates.json"
+    f"https://cdn.jsdelivr.net/gh/{GITHUB_REPO}@main/updates.json"
 )
 ORT_DIR = ROOT / "chrome/content/vendor/ort"
 PLUGIN_ID = "zotero-texlink@yuweidong.dev"
@@ -112,13 +112,18 @@ def main() -> None:
         if not version_pattern.fullmatch(entry_version):
             fail(f"Invalid update entry version: {entry_version!r}")
         update_link = str(entry.get("update_link", ""))
-        expected_prefix = (
+        direct_prefix = (
             f"https://github.com/{GITHUB_REPO}/releases/download/"
             f"v{entry_version}/"
         )
-        if not update_link.startswith(expected_prefix):
+        mirror_prefix = f"https://gh-proxy.org/{direct_prefix}"
+        if not (
+            update_link.startswith(direct_prefix)
+            or update_link.startswith(mirror_prefix)
+        ):
             fail(
-                f"Update link for {entry_version} must start with {expected_prefix!r}"
+                f"Update link for {entry_version} must start with "
+                f"{direct_prefix!r} or its ghProxy mirror"
             )
         expected_asset = f"zotero-texlink-{entry_version}.xpi"
         if not update_link.endswith("/" + expected_asset):

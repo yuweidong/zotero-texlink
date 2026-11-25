@@ -170,7 +170,7 @@ Within `applications.zotero`, `id`, `update_url`, and `strict_max_version` are
 required by Zotero 10's install validation. `update_url` must start with
 `https:`; otherwise the Addon Manager's `checkUpdateSecurity` marks the add-on
 as `appDisabled`. TexLink uses
-`https://raw.githubusercontent.com/yuweidong/zotero-texlink/main/updates.json`
+`https://cdn.jsdelivr.net/gh/yuweidong/zotero-texlink@main/updates.json`
 as its update manifest. The Add-on Manager may fetch that document to check for
 new releases; TexLink's OCR and note-writing code never does. See
 [UPDATES.md](UPDATES.md) for the release workflow.
