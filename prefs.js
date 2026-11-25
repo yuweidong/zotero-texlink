@@ -19,9 +19,10 @@
 // 3. Advanced users may customize this template. If {{latexRaw}} or
 //    {{pageLabel}} is missing, TexLink falls back to its internal template.
 const TEXLINK_DEFAULT_NOTE_TEMPLATE = [
-  '<blockquote data-texlink-entry="{{id}}" data-texlink-annotation="{{annotationKey}}" data-texlink-confidence="{{confidence}}">',
+  '<blockquote data-texlink-entry="{{id}}" data-texlink-id="{{stableId}}" data-texlink-annotation="{{annotationKey}}" data-texlink-latex="{{latexRaw}}" data-texlink-confidence="{{confidence}}">',
   '  <h3>{{anchorTitle}}</h3>',
   '  <pre class="math">$${{latexRaw}}$$</pre>',
+  '  {{reviewBlock}}',
   '  <p><strong>{{labelPage}}:</strong> {{pageLabel}} | <strong>{{labelExtracted}}:</strong> {{timestamp}}</p>',
   '  <p><strong>{{labelSource}}:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">{{labelOpenPdf}}</a> | <a href="{{itemLink}}">{{labelViewItem}}</a></p>',
   '  {{commentBlock}}',
@@ -45,9 +46,22 @@ pref('extensions.zotero.texlink.maxNewTokens', 384);
 // Where formula blocks are written:
 //   auto      - append to the open note if it belongs to the same item;
 //               otherwise use the dedicated log note, creating it if needed
-//   active    - prefer the open note and fall back to the dedicated log note
+//   active    - ONLY write to the open note of this item; report an error when
+//               no editable note is open (no silent fallback since v1.0.0)
 //   dedicated - always use the dedicated log note
 pref('extensions.zotero.texlink.noteTarget', 'auto');
+
+// What to do when the same screenshot is recognized again:
+//   skip    - keep the existing block (default, matches 0.1.5 behaviour)
+//   replace - update that block in place, preserving the user's comment
+// An explicit "Re-recognize and Replace" command always replaces regardless.
+pref('extensions.zotero.texlink.duplicatePolicy', 'skip');
+
+// Low-confidence review is opt-in. When enabled, newly written blocks get a
+// visible "needs review" marker if the model confidence is below threshold.
+// Existing notes are never rewritten automatically.
+pref('extensions.zotero.texlink.showLowConfidenceHint', false);
+pref('extensions.zotero.texlink.confidenceThreshold', 0.7);
 
 // Tag used to find the dedicated note across multiple extractions. Do not
 // remove this tag manually unless you intend to create a new note.

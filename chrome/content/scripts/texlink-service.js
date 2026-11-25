@@ -44,14 +44,31 @@ var TexLinkService = (function () {
   const NOTE_SCHEMA_VERSION = 9;
   const DEFAULT_LOG_TAG = "texlink-formula-log";
   const DEFAULT_LOG_TITLE = "TexLink Formula Notes";
+  const PREFS_PANE_ID = "texlink-preferences";
 
-  // Default template used internally by the service. prefs.js also keeps a
-  // user-editable copy; if that copy is cleared or broken, fall back here so
-  // essential fields are never lost.
+  // Inline the icon as a data URI. XUL `image` attributes and Zotero's
+  // preference sidebar both failed to paint chrome:/jar: URLs on some
+  // Zotero 10 builds and themes. A data URI needs no chrome-package
+  // registration, no resource resolution, and no theme-specific context-fill.
+  // It is the same 48px PNG shipped in chrome/content/icons/texlink-48.png,
+  // base64-encoded so every entry point renders identically everywhere.
+  const ICON_DATA_URI = "data:image/png;base64," +
+    "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAABb0lEQVR4nN1a2w3CMAxMrU5DhgHxTwdhAAaBfwTDJOuAKlEpBNM4r8bOSXxUJOmdfbWTglLCMYQG7E6Pl2oIezuschy4EqcKGbgTDwkBSeQxjl8CJAIkRR/j2kcGdoKiv2Dh3EcGJGOkDjTXffJN9PRUtQBKOKB29FlYSE/PHxE1bVHFQj5hLlmBmMEcRUDuAq1FQOwEzPstRUDKJE4iIHWiuCrE9aGG3AVaixhrLDqLoFjMnO9f1/pyjL7XUOo84EY+RN4n7oMqZD7gF9nM+bZZs1GIPDZmvl4+m+xG/2XgH3l9Of5EnSK0SiemlleXsPmQxazjCsG+h63Ih4gYRAQlC8kCSpRLjdhmzWbFqhBGPqczm8SqNFeh6D5QmrxLMKUvZDeyknsindDIop4BjsdKkEyebCHM9zFVqPl7Ic0k2l2+2BqpA7lmAZRwAOWnTI6wH859ZEBaFqzDtZ8MSMmC9Tj291cDbkKsAFdk4Q2KA6xbTxHo5QAAAABJRU5ErkJggg==";
+
+  // Safety-net template only. The authoritative, user-editable default lives
+  // in prefs.js; this copy exists solely so a cleared/corrupt pref still
+  // produces a complete, localized block. Every visible string is a
+  // placeholder resolved through Fluent at render time - no hardcoded
+  // language (0.1.5 shipped an English fallback in preferences.js).
+  //
+  // data-texlink-id is the STABLE block identity: it equals the annotation key
+  // and never changes when the LaTeX is re-recognized. data-texlink-latex
+  // stores the escaped source for copy/export without parsing math nodes.
   const DEFAULT_NOTE_TEMPLATE = [
-    '<blockquote data-texlink-entry="{{id}}" data-texlink-annotation="{{annotationKey}}" data-texlink-confidence="{{confidence}}">',
+    '<blockquote data-texlink-entry="{{id}}" data-texlink-id="{{stableId}}" data-texlink-annotation="{{annotationKey}}" data-texlink-latex="{{latexRaw}}" data-texlink-confidence="{{confidence}}">',
     '  <h3>{{anchorTitle}}</h3>',
     '  <pre class="math">$${{latexRaw}}$$</pre>',
+    '  {{reviewBlock}}',
     '  <p><strong>{{labelPage}}:</strong> {{pageLabel}} | <strong>{{labelExtracted}}:</strong> {{timestamp}}</p>',
     '  <p><strong>{{labelSource}}:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">{{labelOpenPdf}}</a> | <a href="{{itemLink}}">{{labelViewItem}}</a></p>',
     '  {{commentBlock}}',
@@ -79,12 +96,22 @@ var TexLinkService = (function () {
     let index = 0;
     let pendingSpace = false;
     let lastWasControlWord = false;
+    let lastWasNoBrace = false;
     let textMode = false;
     let textDepth = 0;
     let textCommandPending = false;
     const textCommands = new Set([
       "text", "textrm", "textnormal", "textit", "textbf", "textsf", "texttt",
-      "mbox", "hbox"
+      "mbox", "hbox", "operatorname"
+    ]);
+    // For these commands an inserted "{}" is not cosmetic - it changes the
+    // meaning or produces invalid LaTeX. "\left{}x" is invalid, and
+    // "\operatorname{}a" silently drops the operator name. Keeping the
+    // original space is always safer than inventing a group.
+    const noBraceCommands = new Set([
+      "left", "right", "middle", "big", "Big", "bigg", "Bigg",
+      "begin", "end", "operatorname", "quad", "qquad", "displaystyle",
+      "textstyle", "scriptstyle", "scriptscriptstyle", "limits", "nolimits"
     ]);
 
     while (index < source.length) {
@@ -109,6 +136,7 @@ var TexLinkService = (function () {
           const name = source.slice(index + 1, end);
           output += "\\" + name;
           lastWasControlWord = true;
+          lastWasNoBrace = noBraceCommands.has(name);
           pendingSpace = false;
           index = end;
           if (textCommands.has(name)) textCommandPending = true;
@@ -118,6 +146,7 @@ var TexLinkService = (function () {
         // Control symbol, including "\ " (an explicit math space).
         output += "\\" + next;
         lastWasControlWord = false;
+        lastWasNoBrace = false;
         pendingSpace = false;
         index += 2;
         continue;
@@ -137,6 +166,7 @@ var TexLinkService = (function () {
           textDepth++;
         }
         lastWasControlWord = false;
+        lastWasNoBrace = false;
         pendingSpace = false;
         index++;
         continue;
@@ -152,6 +182,7 @@ var TexLinkService = (function () {
           }
         }
         lastWasControlWord = false;
+        lastWasNoBrace = false;
         pendingSpace = false;
         index++;
         continue;
@@ -162,16 +193,18 @@ var TexLinkService = (function () {
         pendingSpace = false;
         output += ch;
         lastWasControlWord = false;
+        lastWasNoBrace = false;
         index++;
         continue;
       }
 
       if (pendingSpace && lastWasControlWord && /[\p{L}]/u.test(ch)) {
-        output += "{}";
+        output += lastWasNoBrace ? " " : "{}";
       }
       pendingSpace = false;
       output += ch;
       lastWasControlWord = false;
+      lastWasNoBrace = false;
       index++;
     }
 
@@ -377,7 +410,7 @@ var TexLinkService = (function () {
   class Service {
     constructor(options = {}) {
       this.id = options.id || PLUGIN_ID;
-      this.version = options.version || "0.1.5";
+      this.version = options.version || "1.0.0";
       this.rootURI = options.rootURI || "";
       this.chromeBase = options.chromeBase || `chrome://${CHROME_NAME}/content/`;
       this._compactLatexSpacing = compactLatexSpacing;
@@ -389,6 +422,8 @@ var TexLinkService = (function () {
       this._workerAborted = false;
       this._fallbackErrorWindow = null;
       this._prefsPaneID = null;
+      this._prefsPanePromise = null;
+      this._prefsPaneRegistered = false;
       this._l10nInitialized = false;
 
       this._modelConfig = null;
@@ -419,6 +454,9 @@ var TexLinkService = (function () {
       this._notifierID = null;
       this._readerContextMenuHandler = null;
       this._autoQueue = Promise.resolve();
+
+      // Last successful recognition, used by the Tools > TexLink copy commands.
+      this._lastResult = null;
     }
 
     // ===================== Lifecycle =====================
@@ -427,83 +465,99 @@ var TexLinkService = (function () {
       if (this._started) return;
       this._started = true;
 
-      // Wait for the main window UI; otherwise Zotero.Reader and ZoteroContextPane may be unavailable.
-      await Zotero.uiReadyPromise;
-
       this._initLocalization();
 
-      // Register the preferences pane even when TexLink is disabled, so the
-      // user can always open Settings and re-enable it.
-      await this._registerPreferencesPane();
+      // Wait for Zotero's UI before touching window DOM / AddonManager.
+      await Zotero.uiReadyPromise;
 
-      if (!this._getPref("enabled", true)) {
-        this._log("disabled by preference");
-        return;
-      }
+      // ---- Settings pane: independent of recognition wiring ----
+      // Register in parallel and never await it here. In earlier versions the
+      // pane was awaited before the worker/menu/notifier were wired, so any
+      // registration hiccup took down BOTH Settings and formula recognition.
+      // Fire-and-forget with its own catch: the two features cannot block or
+      // fail each other. openPreferences() retries lazily if this fails.
+      this.registerPreferencesPane().catch((error) => {
+        this._logError("Failed to register preferences pane", error);
+      });
+
+      await this._migrateLegacyTemplate();
       this._diag("service-startup", `${this.id} ${this.version}`);
 
-      // Load model metadata and the tokenizer first. Even if model resources
-      // are damaged, installation/startup is not blocked; a clear error is
-      // shown when the user triggers recognition.
-      try {
-        this._modelConfig = await this._readJSON(
-          `${this.chromeBase}models/texlink-model.json`
-        );
-        const tokenizerJSON = await this._readJSON(
-          `${this.chromeBase}models/${this._modelConfig.files.tokenizer}`
-        );
-        this._tokenizer = new TexLinkBPEDecoder(tokenizerJSON);
-        this._log(`model metadata loaded: ${this._modelConfig.displayName}`);
-        this._diag("model-metadata-loaded", this._modelConfig.id);
+      // ---- Recognition wiring (independent of the settings pane) ----
+      if (!this._getPref("enabled", true)) {
+        this._log("disabled by preference: skipping recognition wiring");
       }
-      catch (error) {
-        this._modelError = error;
-        this._logError("Failed to load model metadata/tokenizer", error);
-      }
+      else {
+        // Load model metadata and the tokenizer first. Even if model resources
+        // are damaged, installation/startup is not blocked; a clear error is
+        // shown when the user triggers recognition.
+        try {
+          this._modelConfig = await this._readJSON(
+            `${this.chromeBase}models/texlink-model.json`
+          );
+          const tokenizerJSON = await this._readJSON(
+            `${this.chromeBase}models/${this._modelConfig.files.tokenizer}`
+          );
+          this._tokenizer = new TexLinkBPEDecoder(tokenizerJSON);
+          this._log(`model metadata loaded: ${this._modelConfig.displayName}`);
+          this._diag("model-metadata-loaded", this._modelConfig.id);
+        }
+        catch (error) {
+          this._modelError = error;
+          this._logError("Failed to load model metadata/tokenizer", error);
+        }
 
-      // Create only the Worker shell; ORT and ONNX are actually loaded in _ensureModelLoaded().
-      try {
-        this._createWorker();
-      }
-      catch (error) {
-        this._modelError = this._modelError || error;
-        this._logError("Failed to create ONNX Worker", error);
-      }
+        // Create only the Worker shell; ORT and ONNX load in _ensureModelLoaded().
+        try {
+          this._createWorker();
+        }
+        catch (error) {
+          this._modelError = this._modelError || error;
+          this._logError("Failed to create ONNX Worker", error);
+        }
 
-      this._registerReaderContextMenu();
-      this._registerNotifier();
+        this._registerReaderContextMenu();
+        this._registerNotifier();
 
-      // When the plugin is enabled in an existing window, Zotero may not send
-      // onMainWindowLoad again. Iterate proactively once; bootstrap's window
-      // callback deduplicates.
-      for (const win of Zotero.getMainWindows()) {
-        await this.onMainWindowLoad(win);
-      }
+        // When the plugin is enabled in an existing window, Zotero may not send
+        // onMainWindowLoad again. Iterate proactively once; bootstrap's window
+        // callback deduplicates.
+        for (const win of Zotero.getMainWindows()) {
+          await this.onMainWindowLoad(win);
+        }
 
-      // Low-frequency fallback polling: Zotero 10 exposes no public
-      // "reader created" callback, so newly opened PDFs still get shortcuts
-      // even if an internal event is missed.
-      this._readerPollTimer = setInterval(() => {
-        if (!this._destroyed) this._bindAllReaders();
-      }, 4000);
+        // Low-frequency fallback polling: Zotero 10 exposes no public
+        // "reader created" callback, so newly opened PDFs still get shortcuts
+        // even if an internal event is missed. Recognition only.
+        this._readerPollTimer = setInterval(() => {
+          if (!this._destroyed) this._bindAllReaders();
+        }, 4000);
 
-      // Model warmup. Enabled by default: ORT/ONNX load inside the Worker
-      // without blocking the UI.
-      if (this._getPref("warmupOnStartup", true)) {
-        this._warmupTimer = setTimeout(() => {
-          this._warmupTimer = null;
-          if (this._destroyed) return;
-          this._log("warming up model in background");
-          this._ensureModelLoaded(null)
-            .then(() => this._workerRequest("warmup", {}, [], WORKER_WARMUP_TIMEOUT))
-            .then(() => this._log("model warmup complete"))
-            .catch((error) => this._logError("Model warmup failed", error));
-        }, 2500);
+        // Model warmup. Enabled by default: ORT/ONNX load inside the Worker
+        // without blocking the UI.
+        if (this._getPref("warmupOnStartup", true)) {
+          this._warmupTimer = setTimeout(() => {
+            this._warmupTimer = null;
+            if (this._destroyed) return;
+            this._log("warming up model in background");
+            this._ensureModelLoaded(null)
+              .then(() => this._workerRequest("warmup", {}, [], WORKER_WARMUP_TIMEOUT))
+              .then(() => this._log("model warmup complete"))
+              .catch((error) => this._logError("Model warmup failed", error));
+          }, 2500);
+        }
       }
     }
 
     async onMainWindowLoad(win) {
       if (this._destroyed || !win || this._windowCleanups.has(win)) {
+        return;
+      }
+      // The master switch must suppress Tools-menu commands and shortcuts too.
+      // bootstrap still forwards window callbacks; without this guard the
+      // add-on appeared off while still recognizing formulas (0.1.5 bug).
+      if (!this._getPref("enabled", true)) {
+        this._log("window wiring skipped: TexLink disabled");
         return;
       }
 
@@ -570,8 +624,10 @@ var TexLinkService = (function () {
 
       if (this._prefsPaneID && Zotero.PreferencePanes?.unregister) {
         try { Zotero.PreferencePanes.unregister(this._prefsPaneID); } catch (e) { /* noop */ }
-        this._prefsPaneID = null;
       }
+      this._prefsPaneID = null;
+      this._prefsPanePromise = null;
+      this._prefsPaneRegistered = false;
 
       if (this._readerContextMenuHandler && Zotero.Reader?.unregisterEventListener) {
         try {
@@ -638,27 +694,126 @@ var TexLinkService = (function () {
       return this._t("texlink-note-title", DEFAULT_LOG_TITLE);
     }
 
-    async _registerPreferencesPane() {
-      if (!Zotero.PreferencePanes?.register) {
-        this._log("Zotero.PreferencePanes.register unavailable");
-        return;
-      }
+    /**
+     * 0.1.5 installed its old note template as a DEFAULT pref. On upgrade that
+     * default survives, so new blocks would keep using the old format and miss
+     * the stable id / LaTeX attribute / review marker. Migrate only when the
+     * user never customized the template; a user-provided template is sacred.
+     */
+    async _migrateLegacyTemplate() {
       try {
-        this._prefsPaneID = await Zotero.PreferencePanes.register({
-          pluginID: this.id,
-          id: "texlink-preferences",
-          label: "TexLink",
-          // Let Zotero use the add-on's manifest icon. The manifest fallback is
-          // the most reliable path across Windows, macOS, and Linux.
-          src: `${this.chromeBase}preferences/preferences.xhtml`,
-          scripts: [`${this.chromeBase}preferences/preferences.js`],
-          stylesheets: [`${this.chromeBase}preferences/preferences.css`]
-        });
-        this._log("preferences pane registered");
+        const key = `${PREF_PREFIX}.noteTemplate`;
+        if (Zotero.Prefs.prefHasUserValue(key)) return;
+        const current = String(Zotero.Prefs.get(key, true) || "");
+        if (!current || current.includes("data-texlink-id")) return;
+        if (
+          current.includes('data-texlink-entry="{{id}}"') &&
+          current.includes('data-texlink-annotation="{{annotationKey}}"')
+        ) {
+          Zotero.Prefs.set(key, DEFAULT_NOTE_TEMPLATE, true);
+          this._log("migrated legacy note template to v1.0.0");
+          await this._diag("template-migrated");
+        }
       }
       catch (error) {
-        this._logError("Failed to register preferences pane", error);
+        this._logError("legacy template migration failed", error);
       }
+    }
+
+    /**
+     * Register the TexLink pane in Zotero Preferences.
+     *
+     * Kept deliberately simple and idempotent. Zotero's register() throws if
+     * the pane id already exists, so we check the live registry once and
+     * reuse an existing pane; concurrent callers share a single in-flight
+     * promise. No watchdog, no object-identity bookkeeping: those earlier
+     * attempts raced with Zotero's own pane lifecycle and caused the
+     * intermittent "Settings disappeared" failures.
+     *
+     * Zotero unregisters a plugin's panes itself on shutdown, so we do not
+     * fight it. openPreferences() re-registers lazily if the pane is gone.
+     */
+    registerPreferencesPane() {
+      if (!Zotero.PreferencePanes?.register) {
+        this._log("Zotero.PreferencePanes.register unavailable");
+        return Promise.resolve(null);
+      }
+      if (this._prefsPaneRegistered && this._prefsPaneID) {
+        return Promise.resolve(this._prefsPaneID);
+      }
+      if (this._prefsPanePromise) return this._prefsPanePromise;
+
+      // Reuse a pane Zotero already knows about (e.g. after a hot reload):
+      // re-registering the same id would throw "already registered".
+      const existing = (Zotero.PreferencePanes.pluginPanes || [])
+        .find((pane) => pane.id === PREFS_PANE_ID);
+      if (existing) {
+        this._prefsPaneID = PREFS_PANE_ID;
+        this._prefsPaneRegistered = true;
+        return Promise.resolve(PREFS_PANE_ID);
+      }
+
+      // AddonManager provides rootURI; using it avoids depending on the
+      // dynamic chrome-package registration order.
+      const res = (relative) => `${this.rootURI}chrome/content/${relative}`;
+      const options = {
+        pluginID: this.id,
+        id: PREFS_PANE_ID,
+        label: "TexLink",
+        // Inline PNG renders in the sidebar regardless of theme or URL scheme.
+        image: ICON_DATA_URI,
+        src: res("preferences/preferences.xhtml"),
+        scripts: [res("preferences/preferences.js")],
+        stylesheets: [res("preferences/preferences.css")]
+      };
+
+      this._prefsPanePromise = Promise.resolve()
+        .then(() => Zotero.PreferencePanes.register(options))
+        .then((id) => {
+          this._prefsPaneID = id || PREFS_PANE_ID;
+          this._prefsPaneRegistered = true;
+          this._log(`preferences pane registered: ${this._prefsPaneID}`);
+          return this._prefsPaneID;
+        })
+        .catch((error) => {
+          // Clear cached state so openPreferences() can retry cleanly.
+          this._prefsPaneRegistered = false;
+          this._prefsPaneID = null;
+          this._logError("Failed to register preferences pane", error);
+          return null;
+        })
+        .finally(() => {
+          this._prefsPanePromise = null;
+        });
+      return this._prefsPanePromise;
+    }
+
+    /** Open Zotero Preferences directly on the TexLink pane. */
+    async openPreferences() {
+      // Lazy retry: if Zotero removed the pane (plugin reload) or the earlier
+      // registration failed, create it now. Normally this is a cheap no-op.
+      let paneID = await this.registerPreferencesPane();
+      if (!paneID) {
+        const present = (Zotero.PreferencePanes?.pluginPanes || [])
+          .some((pane) => pane.id === PREFS_PANE_ID);
+        paneID = present ? PREFS_PANE_ID : null;
+      }
+      if (!Zotero.Utilities?.Internal?.openPreferences) {
+        throw new Error(this._t(
+          "texlink-error-preferences-unavailable",
+          "This Zotero version cannot open plugin preferences."
+        ));
+      }
+      try {
+        Zotero.Utilities.Internal.openPreferences(paneID);
+      }
+      catch (error) {
+        if (!paneID) throw error;
+        // Fall back to the plain Preferences window so the command is never
+        // a silent no-op.
+        Zotero.Utilities.Internal.openPreferences(null);
+      }
+      return true;
     }
 
     // ===================== Preferences and logging =====================
@@ -1031,6 +1186,27 @@ var TexLinkService = (function () {
               }, 0);
             }
           });
+
+          // v1.0.0: a formula that already exists can be re-recognized from its
+          // original screenshot and replaced in place instead of deleted.
+          if (items.length === 1 && this._annotationHasEntry(items[0])) {
+            append({
+              label: this._t(
+                "texlink-menu-replace",
+                "TexLink: Re-recognize and Replace This Formula"
+              ),
+              onCommand: () => {
+                this._diag("reader-menu-replace", items[0].key);
+                setTimeout(() => {
+                  this._recognizeAnnotationItems(items, reader, null, { replace: true })
+                    .catch((error) => {
+                      this._logError("re-recognition failed", error);
+                      this._showError(error, reader);
+                    });
+                }, 0);
+              }
+            });
+          }
         }
         catch (error) {
           this._logError("createAnnotationContextMenu handler failed", error);
@@ -1069,6 +1245,35 @@ var TexLinkService = (function () {
         }
       }
       return items;
+    }
+
+    /**
+     * Whether this screenshot already produced a formula block in any note of
+     * its parent item. Synchronous by design: the Reader context-menu API
+     * requires append() to be called without awaiting.
+     */
+    _annotationHasEntry(annotationItem) {
+      try {
+        const sourceItem = annotationItem?.parentItem?.parentItem;
+        if (!sourceItem || typeof sourceItem.getNotes !== "function") return false;
+        const key = String(annotationItem.key || "");
+        if (!key) return false;
+        for (const noteID of sourceItem.getNotes()) {
+          const note = Zotero.Items.get(noteID);
+          if (!note || note.deleted || !note.isNote()) continue;
+          const html = String(note.getNote() || "");
+          if (
+            html.includes(`data-texlink-annotation="${key}"`) ||
+            html.includes(`data-texlink-id="${key}"`)
+          ) {
+            return true;
+          }
+        }
+      }
+      catch (error) {
+        this._log(`annotation entry lookup failed: ${error.message}`);
+      }
+      return false;
     }
 
     /** Get the currently selected image annotations (for the shortcut / Tools menu). */
@@ -1357,13 +1562,11 @@ var TexLinkService = (function () {
     // ===================== Tools menu =====================
 
     /**
-     * Append an item to the end of the Tools menu.
+     * Append TexLink commands to the end of Zotero's Tools menu.
      *
-     * Zotero.MenuManager is the more official alternative, but it only accepts
-     * l10nID (l10nID -> Fluent .label), while this plugin hardcodes English
-     * labels and has zero l10n dependencies. Here we operate directly on
-     * Zotero's own XUL DOM and remove only our nodes on window unload, without
-     * modifying any existing Zotero nodes.
+     * We operate directly on Zotero's own XUL DOM and remove only the nodes we
+     * created on window unload; existing Zotero menu items are never touched.
+     * Labels go through Fluent with English fallbacks.
      */
     _installToolsMenu(win, cleanups) {
       const doc = win?.document;
@@ -1371,16 +1574,61 @@ var TexLinkService = (function () {
       if (!popup) return;
 
       // Old nodes may remain after a plugin reload; remove them first.
-      doc.getElementById("texlink-tools-separator")?.remove();
-      doc.getElementById("texlink-tools-menuitem")?.remove();
+      for (const id of [
+        "texlink-tools-separator",
+        "texlink-tools-menuitem",
+        "texlink-tools-submenu",
+        "texlink-tools-separator-2",
+        "texlink-tools-replace",
+        // Keep removing the legacy Tools -> Settings item so upgrades from
+        // earlier builds do not leave a stale menu entry behind. Settings now
+        // lives only in Zotero's own Preferences sidebar (TexLink pane).
+        "texlink-tools-settings"
+      ]) {
+        doc.getElementById(id)?.remove();
+      }
 
-      const separator = doc.createXULElement("menuseparator");
+      const nodes = [];
+      const handlers = [];
+      const remember = (element, handler) => {
+        nodes.push(element);
+        if (handler) {
+          element.addEventListener("command", handler);
+          handlers.push([element, handler]);
+        }
+        return element;
+      };
+      // Defer all work until the native menu has closed. Opening a window or
+      // touching the clipboard synchronously here was a crash risk on macOS.
+      const defer = (fn) => (event) => {
+        event?.preventDefault?.();
+        setTimeout(() => {
+          try {
+            Promise.resolve(fn()).catch((error) => {
+              this._logError("Tools menu command failed", error);
+              this._showError(error, this._getActiveReader());
+            });
+          }
+          catch (error) {
+            this._logError("Tools menu command failed", error);
+            this._showError(error, this._getActiveReader());
+          }
+        }, 0);
+      };
+
+      const separator = remember(doc.createXULElement("menuseparator"));
       separator.id = "texlink-tools-separator";
 
-      const menuitem = doc.createXULElement("menuitem");
+      const menuitem = remember(
+        doc.createXULElement("menuitem"),
+        defer(() => {
+          this._diag("tools-menu-command");
+          return this.recognizeFromActiveReader();
+        })
+      );
       menuitem.id = "texlink-tools-menuitem";
       menuitem.setAttribute("class", "menuitem-iconic");
-      const iconURL = `${this.chromeBase}icons/texlink-tools.png`;
+      const iconURL = ICON_DATA_URI;
       menuitem.setAttribute("image", iconURL);
       // The legacy image attribute is not painted consistently by Zotero 10.
       // Apply list-style-image inline; this keeps the native Tools menu intact.
@@ -1397,22 +1645,99 @@ var TexLinkService = (function () {
         )
       );
 
-      const handler = () => {
-        this._diag("tools-menu-command");
-        setTimeout(() => {
-          this._diag("tools-menu-deferred");
-          this.recognizeFromActiveReader()
-            .catch((error) => this._showError(error, this._getActiveReader()));
-        }, 0);
+      // Copy / export / review submenu (v1.0.0).
+      const submenu = remember(doc.createXULElement("menu"));
+      submenu.id = "texlink-tools-submenu";
+      submenu.setAttribute("class", "menu-iconic");
+      const submenuIcon = ICON_DATA_URI;
+      submenu.setAttribute("image", submenuIcon);
+      submenu.style.setProperty(
+        "list-style-image",
+        `url("${submenuIcon}")`,
+        "important"
+      );
+      submenu.setAttribute(
+        "label",
+        this._t("texlink-menu-submenu", "TexLink: Copy / Export / Review")
+      );
+      const subpopup = doc.createXULElement("menupopup");
+      submenu.appendChild(subpopup);
+      const addSubItem = (id, key, fallback, fn) => {
+        const item = remember(doc.createXULElement("menuitem"), defer(fn));
+        item.id = id;
+        item.setAttribute("label", this._t(key, fallback));
+        subpopup.appendChild(item);
+        return item;
       };
-      menuitem.addEventListener("command", handler);
-      popup.appendChild(separator);
-      popup.appendChild(menuitem);
+      addSubItem(
+        "texlink-tools-copy-latex",
+        "texlink-menu-copy-latex",
+        "Copy last LaTeX",
+        () => this._copyLastResult("latex")
+      );
+      addSubItem(
+        "texlink-tools-copy-markdown",
+        "texlink-menu-copy-markdown",
+        "Copy last formula as Markdown",
+        () => this._copyLastResult("markdown")
+      );
+      addSubItem(
+        "texlink-tools-copy-inline",
+        "texlink-menu-copy-inline",
+        "Copy last formula as inline math",
+        () => this._copyLastResult("inline")
+      );
+      addSubItem(
+        "texlink-tools-copy-all",
+        "texlink-menu-copy-all",
+        "Copy all formulas in current note (Markdown)",
+        () => this._copyAllFormulas()
+      );
+      addSubItem(
+        "texlink-tools-copy-review",
+        "texlink-menu-copy-review",
+        "Copy low-confidence formulas for review",
+        () => this._copyReviewList()
+      );
+
+      const separator2 = remember(doc.createXULElement("menuseparator"));
+      separator2.id = "texlink-tools-separator-2";
+
+      const replaceItem = remember(
+        doc.createXULElement("menuitem"),
+        defer(() => this._replaceSelectedFromTools())
+      );
+      replaceItem.id = "texlink-tools-replace";
+      replaceItem.setAttribute("class", "menuitem-iconic");
+      const replaceIcon = iconURL;
+      replaceItem.setAttribute("image", replaceIcon);
+      replaceItem.style.setProperty(
+        "list-style-image",
+        `url("${replaceIcon}")`,
+        "important"
+      );
+      replaceItem.setAttribute(
+        "label",
+        this._t("texlink-menu-replace-tools", "TexLink: Re-recognize and Replace Selected Formula")
+      );
+
+      // Settings is intentionally NOT in the Tools menu. It lives only in
+      // Zotero's own Preferences sidebar (the registered TexLink pane), so
+      // there is a single, system-standard place to configure the plugin.
+
+      for (const node of [
+        separator, menuitem, submenu, separator2, replaceItem
+      ]) {
+        popup.appendChild(node);
+      }
 
       cleanups.push(() => {
-        try { menuitem.removeEventListener("command", handler); } catch (e) { /* noop */ }
-        separator.remove();
-        menuitem.remove();
+        for (const [element, handler] of handlers) {
+          try { element.removeEventListener("command", handler); } catch (e) { /* noop */ }
+        }
+        for (const node of nodes) {
+          try { node.remove(); } catch (e) { /* noop */ }
+        }
       });
     }
 
@@ -1452,7 +1777,7 @@ var TexLinkService = (function () {
      * @param {Zotero.Item[]} annotationItems
      * @param {object|null} reader
      * @param {string|null} comment Optional comment
-     * @param {{auto?: boolean}} options
+     * @param {{auto?: boolean, replace?: boolean}} options
      */
     async _recognizeAnnotationItems(annotationItems, reader, comment = null, options = {}) {
       if (this._destroyed) return [];
@@ -1510,6 +1835,10 @@ var TexLinkService = (function () {
         await this._diag("model-load-end");
 
         for (let index = 0; index < annotationItems.length; index++) {
+          // A cancel request must stop the whole batch. Previously the loop
+          // kept going with a terminated Worker and reported every remaining
+          // screenshot as a failure.
+          if (this._cancelRequested) break;
           const item = annotationItems[index];
           const prefix = annotationItems.length > 1
             ? `[${index + 1}/${annotationItems.length}] `
@@ -1521,25 +1850,50 @@ var TexLinkService = (function () {
               60,
               `${prefix}${this._t("texlink-progress-reading", "Reading screenshot and running inference...")}`
             );
-            const result = await this._recognizeSingle(item, reader, effectiveComment, progress, prefix);
+            const result = await this._recognizeSingle(
+              item,
+              reader,
+              effectiveComment,
+              progress,
+              prefix,
+              options.replace === true
+            );
             await this._diag("annotation-done", item.key);
             results.push(result);
           }
           catch (error) {
+            if (this._cancelRequested) break;
             failures.push({ item, error });
             this._logError(`recognition failed for annotation ${item?.key}`, error);
           }
         }
 
+        if (this._cancelRequested) {
+          await this._diag("pipeline-canceled-batch");
+          this._setProgress(progress, null, this._t("texlink-progress-canceled", "Canceled"), true);
+          this._closeProgress(progress, 1500);
+          return results;
+        }
+
         if (results.length) {
-          const duplicates = results.filter((result) => result.duplicate).length;
-          const added = results.length - duplicates;
+          const replaced = results.filter((result) => result.replaced).length;
+          const duplicates = results.filter(
+            (result) => result.duplicate && !result.replaced
+          ).length;
+          const added = results.length - duplicates - replaced;
           const parts = [];
           if (added) {
             parts.push(this._t(
               "texlink-progress-added",
               `Added ${added} formula records to the Zotero note`,
               { count: added }
+            ));
+          }
+          if (replaced) {
+            parts.push(this._t(
+              "texlink-progress-replaced",
+              `Updated ${replaced} formula records in place`,
+              { count: replaced }
             ));
           }
           if (duplicates) {
@@ -1606,7 +1960,7 @@ var TexLinkService = (function () {
 
     // ===================== Single-annotation recognition =====================
 
-    async _recognizeSingle(annotationItem, reader, comment, progress, prefix = "") {
+    async _recognizeSingle(annotationItem, reader, comment, progress, prefix = "", replace = false) {
       await this._diag("single-start", annotationItem.key);
       const source = this._buildSourceContext(annotationItem, reader);
       await this._diag("source-built", source.pageLabel);
@@ -1658,6 +2012,7 @@ var TexLinkService = (function () {
         latex,
         timestamp,
         entryId,
+        stableId: annotationItem.key,
         source,
         comment: comment ? String(comment).slice(0, Number(this._getPref("maxCommentLength", 2000)) || 2000) : "",
         confidence: workerResult.confidence
@@ -1672,13 +2027,25 @@ var TexLinkService = (function () {
       const writeResult = await this._writeEntryToNote({
         html,
         entryId,
+        annotationKey: annotationItem.key,
         source,
         timestamp,
-        latex
+        latex,
+        replace
       });
       const noteItem = writeResult.noteItem;
 
-      await this._diag("note-write-done", `${noteItem.id}${writeResult.duplicate ? " duplicate" : ""}`);
+      await this._diag(
+        "note-write-done",
+        `${noteItem?.id || "-"}${writeResult.duplicate ? " duplicate" : ""}${writeResult.replaced ? " replaced" : ""}`
+      );
+      // "Copy last ..." must reflect THIS recognition, even when it was a
+      // duplicate or an in-place replacement. Remember the destination note
+      // so copy/export still work after the focus moves away from the note.
+      this._lastResult = this._makeClipboardResult(
+        latex, source, timestamp, workerResult.confidence
+      );
+      this._lastResult.noteItem = noteItem;
       if (writeResult.duplicate) {
         return {
           latex,
@@ -1688,7 +2055,21 @@ var TexLinkService = (function () {
           timestamp,
           confidence: workerResult.confidence,
           elapsedMs: workerResult.elapsedMs,
-          duplicate: true
+          duplicate: true,
+          replaced: false
+        };
+      }
+      if (writeResult.replaced) {
+        return {
+          latex,
+          noteItem,
+          annotationItem,
+          source,
+          timestamp,
+          confidence: workerResult.confidence,
+          elapsedMs: workerResult.elapsedMs,
+          duplicate: false,
+          replaced: true
         };
       }
       if (this._getPref("openNoteAfterInsert", false)) {
@@ -1708,7 +2089,8 @@ var TexLinkService = (function () {
         timestamp,
         confidence: workerResult.confidence,
         elapsedMs: workerResult.elapsedMs,
-        duplicate: false
+        duplicate: false,
+        replaced: false
       };
     }
 
@@ -1997,7 +2379,7 @@ var TexLinkService = (function () {
      * Zotero 10 note editor and is rendered by its built-in KaTeX; the same
      * LaTeX is also placed in a plain <pre> below as searchable source.
      */
-    _renderEntryHTML({ latex, timestamp, entryId, source, comment, confidence }) {
+    _renderEntryHTML({ latex, timestamp, entryId, stableId, source, comment, confidence }) {
       let template = String(this._getPref("noteTemplate", "") || "").trim();
       if (
         !template ||
@@ -2013,13 +2395,29 @@ var TexLinkService = (function () {
         this._t("texlink-note-label-comment", "Comment")
       );
       const commentBlock = comment
-        ? `<p><strong>${commentLabel}:</strong> ${this._escapeHTML(comment)}</p>`
+        ? `<p class="texlink-comment"><strong>${commentLabel}:</strong> ${this._escapeHTML(comment)}</p>`
+        : "";
+
+      // Low-confidence review is opt-in: default templates render exactly as
+      // in 0.1.5, so existing notes and user templates are not disturbed.
+      const hasConfidence = confidence !== "" && confidence !== null && confidence !== undefined;
+      const numericConfidence = Number(confidence);
+      const needsReview = !!this._getPref("showLowConfidenceHint", false) &&
+        hasConfidence &&
+        Number.isFinite(numericConfidence) &&
+        numericConfidence < this._confidenceThreshold();
+      const reviewBlock = needsReview
+        ? `<p class="texlink-review" data-texlink-review="low">${this._escapeHTML(
+            this._t("texlink-note-review-hint", "Needs review (low confidence)")
+          )}</p>`
         : "";
 
       const values = {
         id: this._escapeHTML(entryId),
+        stableId: this._escapeHTML(stableId || source.annotationKey || ""),
         annotationKey: this._escapeHTML(source.annotationKey || ""),
         latexRaw: escapedLatex,
+        reviewBlock,
         anchorTitle: this._escapeHTML(
           this._t("texlink-note-anchor-title", "TexLink formula anchor")
         ),
@@ -2043,6 +2441,7 @@ var TexLinkService = (function () {
         pdfLink: this._escapeHTML(source.pdfLink),
         itemLink: this._escapeHTML(source.itemLink),
         confidence: (() => {
+          if (confidence === "" || confidence === null || confidence === undefined) return "";
           const value = Number(confidence);
           return Number.isFinite(value) ? Math.max(0, Math.min(1, value)).toFixed(3) : "";
         })(),
@@ -2054,11 +2453,162 @@ var TexLinkService = (function () {
       });
     }
 
+    // ---------------- v1.0.0 note / clipboard helpers ----------------
+
+    _confidenceThreshold() {
+      const value = Number(this._getPref("confidenceThreshold", 0.7));
+      return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0.7;
+    }
+
+    _confidenceIsLow(confidence) {
+      // An absent confidence means "unknown", not zero. Marking it for review
+      // would flag every legacy block that predates confidence reporting.
+      if (confidence === "" || confidence === null || confidence === undefined) {
+        return false;
+      }
+      const value = Number(confidence);
+      return Number.isFinite(value) && value < this._confidenceThreshold();
+    }
+
+    _makeClipboardResult(latex, source, timestamp, confidence) {
+      const clean = String(latex || "");
+      return {
+        latex: clean,
+        inline: `$${clean}$`,
+        block: `$$\n${clean}\n$$`,
+        markdown: [
+          `$$\n${clean}\n$$`,
+          "",
+          `> ${source?.sourceTitle || ""} · ${source?.pageLabel || ""}`,
+          ""
+        ].join("\n"),
+        timestamp,
+        confidence,
+        source
+      };
+    }
+
+    _unescapeHTML(value) {
+      return String(value ?? "")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, "&");
+    }
+
+    _attrFromBlock(block, name) {
+      const match = String(block || "").match(
+        new RegExp(`${name}="([^"]*)"`, "i")
+      );
+      return match ? this._unescapeHTML(match[1]) : "";
+    }
+
+    /**
+     * Read the LaTeX back out of a formula block. New blocks carry an escaped
+     * data-texlink-latex attribute; 0.1.5 blocks are read from the KaTeX node
+     * or the plain <pre> source, so both generations remain usable.
+     */
+    _extractLatexFromBlock(block) {
+      const attribute = this._attrFromBlock(block, "data-texlink-latex");
+      if (attribute) return attribute;
+      const math = String(block || "").match(
+        /<pre[^>]*class="math"[^>]*>([\s\S]*?)<\/pre>/i
+      );
+      if (math) {
+        let text = this._unescapeHTML(
+          math[1].replace(/<[^>]+>/g, "")
+        ).trim();
+        if (text.startsWith("$$") && text.endsWith("$$")) {
+          text = text.slice(2, -2).trim();
+        }
+        else if (text.startsWith("$") && text.endsWith("$")) {
+          text = text.slice(1, -1).trim();
+        }
+        if (text) return text;
+      }
+      const pres = String(block || "").match(/<pre[^>]*>([\s\S]*?)<\/pre>/gi) || [];
+      if (pres.length) {
+        return this._unescapeHTML(
+          pres[pres.length - 1].replace(/<[^>]*>/gi, "")
+        ).trim();
+      }
+      return "";
+    }
+
+    /**
+     * Locate a formula block by its stable annotation key, with fallbacks for
+     * 0.1.5 notes (which have no data-texlink-id) and custom templates.
+     */
+    _findEntryBlockInHTML(html, annotationKey, entryId) {
+      const source = String(html || "");
+      const markers = [];
+      if (annotationKey) {
+        const key = this._escapeHTML(annotationKey);
+        markers.push(`data-texlink-id="${key}"`);
+        markers.push(`data-texlink-annotation="${key}"`);
+      }
+      if (entryId) markers.push(`data-texlink-entry="${this._escapeHTML(entryId)}"`);
+      for (const marker of markers) {
+        const at = source.indexOf(marker);
+        if (at < 0) continue;
+        const start = source.lastIndexOf("<blockquote", at);
+        const end = source.indexOf("</blockquote>", at);
+        if (start >= 0 && end > at) {
+          return source.slice(start, end + "</blockquote>".length);
+        }
+      }
+      return null;
+    }
+
+    _replaceEntryInHTML(html, oldBlock, newBlock) {
+      const source = String(html || "");
+      const at = source.indexOf(oldBlock);
+      if (at < 0 || !oldBlock) return null;
+      return source.slice(0, at) + newBlock + source.slice(at + oldBlock.length);
+    }
+
+    _extractCommentFromBlock(block) {
+      const text = String(block || "");
+      const match = text.match(
+        /<p[^>]*class="texlink-comment"[^>]*>([\s\S]*?)<\/p>/i
+      ) || text.match(
+        /<p[^>]*>\s*<strong>[^<]*(?:Comment|备注)[^<]*<\/strong>\s*([\s\S]*?)<\/p>/i
+      );
+      if (!match) return "";
+      // Drop the <strong> element INCLUDING its label text; stripping only the
+      // tags used to turn "Comment: x" into "Comment: Comment: x" on replace.
+      return this._unescapeHTML(
+        match[1]
+          .replace(/<strong\b[^>]*>[\s\S]*?<\/strong>/gi, "")
+          .replace(/<[^>]+>/g, "")
+          .trim()
+      );
+    }
+
+    _collectFormulasFromHTML(html) {
+      const blocks = String(html || "").match(
+        /<blockquote\b[^>]*data-texlink-(?:id|annotation|entry)[^>]*>[\s\S]*?<\/blockquote>/gi
+      ) || [];
+      return blocks.map((block) => ({
+        block,
+        latex: this._extractLatexFromBlock(block),
+        confidence: this._attrFromBlock(block, "data-texlink-confidence"),
+        stableId:
+          this._attrFromBlock(block, "data-texlink-id") ||
+          this._attrFromBlock(block, "data-texlink-annotation") ||
+          this._attrFromBlock(block, "data-texlink-entry")
+      })).filter((entry) => !!entry.latex);
+    }
+
     /**
      * Resolve where the note write should go:
      * - auto: prefer the currently open note belonging to the same item; otherwise the dedicated child note;
-     * - active: same as auto, but fall back to the dedicated child note if no note for this item is open;
+     * - active: ONLY the currently open note of this item; report an error when none is open;
      * - dedicated: always the dedicated child note.
+     *
+     * Auto and active were identical in 0.1.5 despite different labels in the
+     * settings pane. They now behave as documented.
      *
      * Also determine whether the target note is already open in a note editor.
      * If it is, do not overwrite it with item.setNote (that would lose unsaved
@@ -2069,10 +2619,14 @@ var TexLinkService = (function () {
       const mode = String(this._getPref("noteTarget", "auto"));
       if (mode !== "dedicated" && !preferredNote) {
         const active = this._findActiveEditorForSource(sourceItem);
-        // Read-only notes (e.g. synced read-only notes in group libraries)
-        // cannot be written; fall back automatically to the dedicated child note.
         if (active && active.noteItem?.isEditable?.()) {
           return { noteItem: active.noteItem, editorInstance: active.editorInstance, active: true };
+        }
+        if (mode === "active") {
+          throw new Error(this._t(
+            "texlink-error-no-active-note",
+            "No editable open note belongs to this item. Open the item's note first or change the note destination setting."
+          ));
         }
       }
 
@@ -2209,7 +2763,7 @@ var TexLinkService = (function () {
      *    editor saves the change itself about one second later.
      * B. The note is not open: call item.setNote + saveTx directly.
      */
-    async _writeEntryToNote({ html, entryId, source, timestamp, latex }) {
+    async _writeEntryToNote({ html, entryId, annotationKey, source, timestamp, latex, replace = false }) {
       const target = await this._resolveNoteTarget(source.regularItem);
       const noteItem = target.noteItem;
       if (!noteItem?.isEditable?.()) {
@@ -2219,10 +2773,28 @@ var TexLinkService = (function () {
         ));
       }
 
-      if (this._noteHasEntry(noteItem, entryId)) {
+      // Stable identity is the annotation key, not the LaTeX hash. A changed
+      // recognition result is the SAME formula and must not create a second
+      // block. Old 0.1.5 notes are matched by annotation or legacy entry id.
+      const noteHTML = String(noteItem.getNote() || "");
+      const existingBlock = this._findEntryBlockInHTML(noteHTML, annotationKey, entryId);
+      const wantsReplace = replace ||
+        String(this._getPref("duplicatePolicy", "skip")) === "replace";
+
+      if (existingBlock && !wantsReplace) {
         this._log(`duplicate entry ${entryId}; skipping`);
         await this._diag("duplicate-skip", entryId);
-        return { noteItem, duplicate: true };
+        return { noteItem, duplicate: true, replaced: false };
+      }
+      if (existingBlock) {
+        return this._replaceEntryBlock({
+          noteItem,
+          editorInstance: target.editorInstance,
+          oldBlock: existingBlock,
+          newHTML: html,
+          annotationKey,
+          entryId
+        });
       }
 
       await this._diag("write-target", target.editorInstance ? "live-editor" : "item-save");
@@ -2237,21 +2809,85 @@ var TexLinkService = (function () {
             try { target.editorInstance.saveSync(); } catch (e) { /* noop */ }
             await this._waitForNoteText(noteItem, timestamp, 1500);
           }
-          return { noteItem, duplicate: false };
+          return { noteItem, duplicate: false, replaced: false };
         }
       }
 
       await this._diag("append-direct-start");
       await this._appendEntryDirectly(noteItem, html);
       await this._diag("append-direct-done");
-      return { noteItem, duplicate: false };
+      return { noteItem, duplicate: false, replaced: false };
     }
 
-    _noteHasEntry(noteItem, entryId) {
-      try {
-        return String(noteItem.getNote() || "").includes(
-          `data-texlink-entry="${entryId}"`
+    /**
+     * Replace an existing block in place. The stable id stays the same, the
+     * user's comment is preserved, and an open editor is updated through
+     * Zotero's applyIncrementalUpdate() so unsaved typing is not discarded.
+     */
+    async _replaceEntryBlock({ noteItem, editorInstance, oldBlock, newHTML, annotationKey, entryId }) {
+      await this._diag("replace-start", annotationKey);
+      const savedComment = this._extractCommentFromBlock(oldBlock);
+      let finalHTML = newHTML;
+      // When the user supplied a fresh comment during re-recognition, the new
+      // block already contains it; do not append the old one a second time.
+      if (savedComment && !newHTML.includes('class="texlink-comment"')) {
+        const label = this._escapeHTML(
+          this._t("texlink-note-label-comment", "Comment")
         );
+        const commentHTML =
+          `<p class="texlink-comment"><strong>${label}:</strong> ` +
+          `${this._escapeHTML(savedComment)}</p>`;
+        finalHTML = newHTML.includes("</blockquote>")
+          ? newHTML.replace("</blockquote>", `  ${commentHTML}\n</blockquote>`)
+          : `${newHTML}${commentHTML}`;
+      }
+
+      // Flush any pending editor input before reading the note HTML.
+      if (editorInstance && typeof editorInstance.saveSync === "function") {
+        try { editorInstance.saveSync(); } catch (e) { /* best effort */ }
+        await this._delay(200);
+      }
+
+      const current = String(noteItem.getNote() || "");
+      // Re-locate after the flush: unsaved edits may have changed the block
+      // text while keeping its stable id. Using the pre-flush snippet here
+      // made every replacement fail when the note was open with edits.
+      const freshBlock =
+        this._findEntryBlockInHTML(current, annotationKey, entryId) || oldBlock;
+      const next = this._replaceEntryInHTML(current, freshBlock, finalHTML);
+      if (next === null) {
+        // The note changed between lookup and write. Never overwrite it.
+        throw new Error(this._t(
+          "texlink-error-replace-stale",
+          "The note changed while updating the formula. Please try again."
+        ));
+      }
+
+      noteItem.setNote(next);
+      await noteItem.saveTx({ skipSelect: true });
+
+      if (editorInstance && typeof editorInstance.applyIncrementalUpdate === "function") {
+        try {
+          editorInstance.applyIncrementalUpdate({ html: next }, true);
+        }
+        catch (error) {
+          this._log("applyIncrementalUpdate failed; reopen the note to see the update");
+        }
+      }
+
+      await this._diag("replace-done", `${annotationKey || entryId}`);
+      return { noteItem, duplicate: false, replaced: true };
+    }
+
+    _noteHasEntry(noteItem, entryId, annotationKey) {
+      try {
+        const html = String(noteItem.getNote() || "");
+        if (annotationKey) {
+          const key = this._escapeHTML(annotationKey);
+          if (html.includes(`data-texlink-id="${key}"`)) return true;
+          if (html.includes(`data-texlink-annotation="${key}"`)) return true;
+        }
+        return html.includes(`data-texlink-entry="${this._escapeHTML(entryId)}"`);
       }
       catch (error) {
         return false;
@@ -2496,6 +3132,197 @@ var TexLinkService = (function () {
           this._logError("Failed to show fallback error window", error);
         }
       }, 0);
+    }
+
+    // ===================== Copy / export / review commands =====================
+
+    /** The note currently open in the context pane or a note tab. */
+    _getActiveNoteItem() {
+      try {
+        const win = Zotero.getMainWindow();
+        const instance = win?.ZoteroContextPane?.activeEditor?.getCurrentInstance?.();
+        if (instance?._item?.isNote?.()) {
+          return { noteItem: instance._item, editorInstance: instance };
+        }
+        for (const editor of Zotero.Notes?._editorInstances || []) {
+          if (!editor?._item?.isNote?.()) continue;
+          if (
+            editor.tabID === win?.Zotero_Tabs?.selectedID ||
+            editor._iframeWindow === win?.document?.activeElement?.contentWindow
+          ) {
+            return { noteItem: editor._item, editorInstance: editor };
+          }
+        }
+      }
+      catch (error) {
+        this._log(`active note lookup failed: ${error.message}`);
+      }
+      return null;
+    }
+
+    _copyToClipboard(text) {
+      const value = String(text ?? "");
+      if (!value) {
+        throw new Error(this._t("texlink-error-nothing-to-copy", "There is nothing to copy yet."));
+      }
+      const helper = Components.classes[
+        "@mozilla.org/widget/clipboardhelper;1"
+      ].getService(Components.interfaces.nsIClipboardHelper);
+      helper.copyString(value);
+      return value;
+    }
+
+    /** Brief success feedback without an extra settings window. */
+    _notify(message) {
+      const progress = this._newProgress(message, this._getActiveReader());
+      if (progress) {
+        this._setProgress(progress, null, message);
+        this._closeProgress(progress, 2600);
+        return;
+      }
+      setTimeout(() => {
+        try {
+          const window = new Zotero.ProgressWindow({ closeOnClick: true });
+          window.changeHeadline("TexLink");
+          window.progress = new window.ItemProgress("note", message);
+          window.show();
+          window.startCloseTimer(2600);
+        }
+        catch (error) {
+          this._log(`status notification failed: ${error.message}`);
+        }
+      }, 0);
+    }
+
+    _copyLastResult(kind) {
+      const last = this._lastResult;
+      if (!last) {
+        throw new Error(this._t(
+          "texlink-error-no-last-result",
+          "Recognize a formula first; then you can copy it."
+        ));
+      }
+      let text = last.markdown;
+      let key = "texlink-status-copied";
+      let fallback = "Copied to clipboard.";
+      if (kind === "latex") {
+        text = last.latex;
+        key = "texlink-status-copied-latex";
+        fallback = "LaTeX copied to clipboard.";
+      }
+      else if (kind === "inline") {
+        text = last.inline;
+        key = "texlink-status-copied-inline";
+        fallback = "Inline formula copied to clipboard.";
+      }
+      else if (kind === "block") {
+        text = last.block;
+      }
+      this._copyToClipboard(text);
+      this._notify(this._t(key, fallback));
+    }
+
+    _requireActiveFormulas() {
+      let active = this._getActiveNoteItem();
+      if (!active) {
+        // The most common workflow is: recognize from the PDF, then use Tools
+        // without returning focus to the note. Fall back to the note that just
+        // received the formula instead of showing a spurious error.
+        const noteItem = this._lastResult?.noteItem;
+        if (noteItem && typeof noteItem.getNote === "function" && !noteItem.deleted) {
+          active = {
+            noteItem,
+            editorInstance: this._findEditorForNote(noteItem)
+          };
+        }
+      }
+      if (!active) {
+        throw new Error(this._t(
+          "texlink-error-no-note",
+          "Open a Zotero note first, then use the copy or export command."
+        ));
+      }
+      const entries = this._collectFormulasFromHTML(
+        String(active.noteItem.getNote() || "")
+      );
+      if (!entries.length) {
+        throw new Error(this._t(
+          "texlink-error-no-formulas",
+          "This note does not contain any TexLink formula blocks yet."
+        ));
+      }
+      return { active, entries };
+    }
+
+    _copyAllFormulas() {
+      const { entries } = this._requireActiveFormulas();
+      const output = entries.map((entry, index) => [
+        `## ${index + 1} · ${entry.stableId}`,
+        "",
+        `$$\n${entry.latex}\n$$`,
+        entry.confidence
+          ? `_${this._t("texlink-note-label-confidence", "Confidence")}: ${entry.confidence}_`
+          : "",
+        ""
+      ].join("\n")).join("\n");
+      this._copyToClipboard(output);
+      this._notify(this._t(
+        "texlink-status-copied-all",
+        `Copied ${entries.length} formulas to clipboard.`,
+        { count: entries.length }
+      ));
+    }
+
+    _copyReviewList() {
+      const { entries } = this._requireActiveFormulas();
+      const low = entries.filter((entry) => this._confidenceIsLow(entry.confidence));
+      if (!low.length) {
+        this._notify(this._t(
+          "texlink-status-no-review",
+          "No low-confidence formulas in this note."
+        ));
+        return;
+      }
+      const confidenceLabel = this._t(
+        "texlink-note-label-confidence",
+        "Confidence"
+      );
+      const output = low.map((entry, index) => [
+        `## ${index + 1} · ${entry.stableId}`,
+        `$$\n${entry.latex}\n$$`,
+        ` ${confidenceLabel}: ${entry.confidence}`,
+        ""
+      ].join("\n")).join("\n");
+      this._copyToClipboard(output);
+      this._notify(this._t(
+        "texlink-status-copied-review",
+        `Copied ${low.length} formulas that need review.`,
+        { count: low.length }
+      ));
+    }
+
+    async _replaceSelectedFromTools() {
+      const reader = this._getActiveReader();
+      if (!reader) {
+        throw new Error(this._t(
+          "texlink-error-open-pdf",
+          "Open a PDF and select a formula with the image annotation tool first. TexLink does not read the clipboard or upload images."
+        ));
+      }
+      const items = this._getSelectedImageAnnotations(reader);
+      if (items.length !== 1) {
+        throw new Error(this._t(
+          "texlink-error-select-one",
+          "Select exactly one formula screenshot in the PDF to replace."
+        ));
+      }
+      if (!this._annotationHasEntry(items[0])) {
+        throw new Error(this._t(
+          "texlink-error-no-entry-to-replace",
+          "This screenshot has no TexLink formula block yet. Use Recognize Formula and Add to Note first."
+        ));
+      }
+      return this._recognizeAnnotationItems(items, reader, null, { replace: true });
     }
 
     async _promptComment() {

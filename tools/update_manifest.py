@@ -12,10 +12,9 @@ Bump `version` in manifest.json before running this script. The script verifies
 the manifest update URL, adds or replaces the version entry, and writes a
 direct GitHub release asset URL.
 
-update_hash is omitted by default because a ZIP built on a different machine
-or zlib version is not byte-for-byte reproducible. The release workflow publishes
-a .sha256 file alongside the XPI for manual verification. Use --with-hash only
-if the XPI build is reproducible on every machine that will build it.
+A sha256 update_hash is included by default (the XPI build normalizes ZIP
+metadata and is reproducible). Use --no-hash only for the first pass of a
+release, before the XPI exists.
 """
 from __future__ import annotations
 
@@ -79,12 +78,12 @@ def main() -> None:
     parser.add_argument(
         "--with-hash",
         action="store_true",
-        help="Add update_hash from the built XPI (requires a reproducible build)",
+        help="Deprecated: update_hash is included by default",
     )
     parser.add_argument(
         "--no-hash",
         action="store_true",
-        help="Deprecated; hashes are omitted by default",
+        help="Omit update_hash (only for the first pass before building the XPI)",
     )
     args = parser.parse_args()
 
@@ -115,10 +114,11 @@ def main() -> None:
     )
 
     update_hash = None
-    if args.with_hash:
+    if not args.no_hash:
         if not xpi_path.is_file():
             raise SystemExit(
-                f"Built XPI not found at {xpi_path}. Run tools/build_xpi.py first."
+                f"Built XPI not found at {xpi_path}. "
+                "Build it first, or pass --no-hash for the first pass."
             )
         update_hash = f"sha256:{sha256(xpi_path)}"
 

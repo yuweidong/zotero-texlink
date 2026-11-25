@@ -2,6 +2,8 @@
 
 ### Turn formula screenshots into durable Zotero notes.
 
+[![Latest Release](https://img.shields.io/github/v/release/yuweidong/zotero-texlink)](https://github.com/yuweidong/zotero-texlink/releases/latest) [![Zotero 中文社区 · 已收录](https://img.shields.io/badge/Zotero%20%E4%B8%AD%E6%96%87%E7%A4%BE%E5%8C%BA-%E5%B7%B2%E6%94%B6%E5%BD%95-blue)](https://zotero-chinese.com/plugins/) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 🌐 **English** · [简体中文](README.zh-CN.md)
 
 `✅ Zotero`  ·  `🔒 Fully offline`  ·  `📝 Notes-first`  ·  `⚡ One click`
@@ -49,6 +51,18 @@ Every formula block includes:
 - ✍️ an optional comment
 - 🔎 the searchable formula source
 
+## 🆕 New in v1.0.0
+
+- **Fix a formula in place.** Re-recognize a block from its original screenshot
+  and replace it without creating a duplicate. Your comment is preserved.
+- **Copy formulas.** Copy the last LaTeX, Markdown, inline or block formula,
+  or copy all formulas in the current note.
+- **Review uncertain results.** Opt-in low-confidence markers and a "copy for
+  review" command. TexLink never rewrites a formula automatically, and existing
+  notes are not modified.
+- **Stable v1.0.0 release.** Settings, Tools menu, auto-update, and reproducible
+  builds are covered by the release checks.
+
 ## 🎯 Why TexLink
 
 | | TexLink | Typical screenshot tool |
@@ -88,6 +102,8 @@ Both versions follow Zotero's global locale automatically.
 - A clearer screenshot gives a better result.
 - The PDF should be attached to a regular Zotero item.
 - TexLink keeps formulas local and never replaces them with a guessed result.
+
+If TexLink saves you time, a star helps others find it.
 
 ## 📄 License
 

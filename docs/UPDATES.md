@@ -15,10 +15,10 @@ update manifest:
 https://raw.githubusercontent.com/yuweidong/zotero-texlink/main/updates.json
 
 release page:
-https://github.com/yuweidong/zotero-texlink/releases/tag/v0.1.4
+https://github.com/yuweidong/zotero-texlink/releases/tag/v1.0.0
 
 XPI asset:
-https://github.com/yuweidong/zotero-texlink/releases/download/v0.1.4/zotero-texlink-0.1.4.xpi
+https://github.com/yuweidong/zotero-texlink/releases/download/v1.0.0/zotero-texlink-1.0.0.xpi
 ```
 
 `updates.json` uses an **array** named `updates`. Each version is a separate
@@ -30,8 +30,8 @@ object in that array. Do not use a `versions` object keyed by version number.
     "zotero-texlink@yuweidong.dev": {
       "updates": [
         {
-          "version": "0.1.4",
-          "update_link": "https://github.com/yuweidong/zotero-texlink/releases/download/v0.1.4/zotero-texlink-0.1.4.xpi",
+          "version": "1.0.0",
+          "update_link": "https://github.com/yuweidong/zotero-texlink/releases/download/v1.0.0/zotero-texlink-1.0.0.xpi",
           "update_hash": "sha256:<64-character-xpi-sha256>",
           "applications": {
             "zotero": {
@@ -52,10 +52,10 @@ The GitHub release page URL and the asset URL are different:
 
 ```text
 release page:
-https://github.com/<owner>/<repo>/releases/tag/v0.1.4
+https://github.com/<owner>/<repo>/releases/tag/v1.0.0
 
 asset download:
-https://github.com/<owner>/<repo>/releases/download/v0.1.4/<asset-name>.xpi
+https://github.com/<owner>/<repo>/releases/download/v1.0.0/<asset-name>.xpi
 ```
 
 The asset path is `/releases/download/<tag>/<asset>`, not a path containing the
@@ -131,10 +131,10 @@ not match the uploaded asset.
 Zotero uses the `update_url` from the **installed** manifest. Rebuilding a newer
 XPI does not change the update URL used by an already installed copy.
 
-The published v0.1.3 XPI already contains the real update URL and matches the
-v0.1.3 release asset. Existing v0.1.3 users can therefore update to v0.1.4
-automatically once the v0.1.4 entry is live. Older builds that still contain a
-placeholder update URL require one manual install of a corrected build.
+The published v0.1.3+ XPIs contain the real update URL and match their release
+assets. Existing 0.1.3/0.1.4/0.1.5 users can update to v1.0.0 automatically
+once the v1.0.0 entry is live, because the versions are strictly increasing.
+Reusing the same version number will NOT trigger an update.
 
 Do not change `update_url` between ordinary releases. If you must move the
 host, publish a build containing the new URL first.
@@ -169,7 +169,8 @@ response body itself.
 ## CI
 
 `.github/workflows/verify.yml` runs the asset checks, decoder tests, service
-helper tests, and an XPI build on pushes and pull requests.
+helper tests, an XPI build, and a second build whose SHA256 must match the first
+(reproducible-build gate) on pushes and pull requests.
 
 `.github/workflows/release.yml` runs on `v*` tags and requires:
 
@@ -177,7 +178,9 @@ helper tests, and an XPI build on pushes and pull requests.
 - a matching `updates.json` entry with a `sha256:` hash;
 - a successful build and hash verification.
 
-It then creates or updates the GitHub release and uploads the XPI and checksum.
+It then creates or updates the GitHub release and uploads **only** the XPI and
+checksum for the tagged version. Historical assets in `dist/` are never
+re-uploaded or overwritten.
 
 ## Privacy note
 

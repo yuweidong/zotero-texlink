@@ -22,20 +22,26 @@
     shortcut: "accel,shift,L",
     binarize: false,
     maxCommentLength: 2000,
+    duplicatePolicy: "skip",
+    showLowConfidenceHint: false,
+    confidenceThreshold: 0.7,
     debug: false,
     diagnosticLog: false
   });
 
-  // Fallback used only if the service has not exposed its template yet.
-  // Keep this in sync with DEFAULT_NOTE_TEMPLATE in texlink-service.js.
+  // Last-resort template. The authoritative default is registered in prefs.js
+  // and is also exposed by the service. 0.1.5 kept a third copy here with
+  // hardcoded English labels, which leaked English notes into Chinese Zotero.
+  // Every visible string below is a placeholder resolved through Fluent.
   const FALLBACK_TEMPLATE = [
-    '<blockquote data-texlink-entry="{{id}}" data-texlink-annotation="{{annotationKey}}" data-texlink-confidence="{{confidence}}">',
-    '  <h3>TexLink formula anchor</h3>',
+    '<blockquote data-texlink-entry="{{id}}" data-texlink-id="{{stableId}}" data-texlink-annotation="{{annotationKey}}" data-texlink-latex="{{latexRaw}}" data-texlink-confidence="{{confidence}}">',
+    '  <h3>{{anchorTitle}}</h3>',
     '  <pre class="math">$${{latexRaw}}$$</pre>',
-    '  <p><strong>Page:</strong> {{pageLabel}} | <strong>Extracted:</strong> {{timestamp}}</p>',
-    '  <p><strong>Source:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">Open in PDF</a> | <a href="{{itemLink}}">View item</a></p>',
+    '  {{reviewBlock}}',
+    '  <p><strong>{{labelPage}}:</strong> {{pageLabel}} | <strong>{{labelExtracted}}:</strong> {{timestamp}}</p>',
+    '  <p><strong>{{labelSource}}:</strong> {{sourceTitle}} | <a href="{{pdfLink}}">{{labelOpenPdf}}</a> | <a href="{{itemLink}}">{{labelViewItem}}</a></p>',
     '  {{commentBlock}}',
-    '  <p><strong>LaTeX source:</strong></p>',
+    '  <p><strong>{{labelLatexSource}}:</strong></p>',
     '  <pre>{{latexRaw}}</pre>',
     '</blockquote>'
   ].join("\n");
@@ -59,13 +65,16 @@
   }
 
   function getDefaultTemplate() {
+    // The service owns the built-in default. Reading the pref here would
+    // return the user's CUSTOM template, making "Restore Default" a no-op.
     try {
       const template = Zotero.TexLink?.getDefaultNoteTemplate?.();
-      return template || FALLBACK_TEMPLATE;
+      if (template && String(template).includes("{{latexRaw}}")) {
+        return String(template);
+      }
     }
-    catch (error) {
-      return FALLBACK_TEMPLATE;
-    }
+    catch (error) { /* fall through */ }
+    return FALLBACK_TEMPLATE;
   }
 
   function setPref(key, value) {
@@ -118,6 +127,18 @@
     byId("texlink-pref-binarize").checked = !!getPref("binarize", DEFAULTS.binarize);
     byId("texlink-pref-debug").checked = !!getPref("debug", DEFAULTS.debug);
     byId("texlink-pref-diagnostic").checked = !!getPref("diagnosticLog", DEFAULTS.diagnosticLog);
+
+    byId("texlink-pref-review-hint").checked = !!getPref(
+      "showLowConfidenceHint", DEFAULTS.showLowConfidenceHint
+    );
+    byId("texlink-pref-confidence").value = String(
+      getPref("confidenceThreshold", DEFAULTS.confidenceThreshold)
+    );
+    const duplicates = String(getPref("duplicatePolicy", DEFAULTS.duplicatePolicy));
+    const duplicatesSelect = byId("texlink-pref-duplicates");
+    duplicatesSelect.value = [...duplicatesSelect.options].some(
+      (option) => option.value === duplicates
+    ) ? duplicates : DEFAULTS.duplicatePolicy;
 
     byId("texlink-pref-max-tokens").value = String(getPref("maxNewTokens", DEFAULTS.maxNewTokens));
     byId("texlink-pref-max-comment").value = String(getPref("maxCommentLength", DEFAULTS.maxCommentLength));
@@ -193,6 +214,18 @@
     });
   }
 
+  function bindDecimal(id, key, min, max, fallback) {
+    byId(id).addEventListener("change", (event) => {
+      const number = Number(event.target.value);
+      const value = Number.isFinite(number)
+        ? Math.min(max, Math.max(min, number))
+        : fallback;
+      event.target.value = String(value);
+      setPref(key, value);
+      showStatus("texlink-status-saved", "ok", "Saved.");
+    });
+  }
+
   function bind() {
     bindCheckbox("texlink-pref-enabled", "enabled", () => {
       showStatus(
@@ -214,6 +247,14 @@
     bindCheckbox("texlink-pref-binarize", "binarize");
     bindCheckbox("texlink-pref-debug", "debug");
     bindCheckbox("texlink-pref-diagnostic", "diagnosticLog");
+
+    bindCheckbox("texlink-pref-review-hint", "showLowConfidenceHint");
+    bindDecimal("texlink-pref-confidence", "confidenceThreshold", 0, 1, DEFAULTS.confidenceThreshold);
+
+    byId("texlink-pref-duplicates").addEventListener("change", (event) => {
+      setPref("duplicatePolicy", String(event.target.value));
+      showStatus("texlink-status-saved", "ok", "Saved.");
+    });
 
     bindNumber("texlink-pref-max-tokens", "maxNewTokens", 1, 512, DEFAULTS.maxNewTokens);
     bindNumber("texlink-pref-max-comment", "maxCommentLength", 1, 10000, DEFAULTS.maxCommentLength);

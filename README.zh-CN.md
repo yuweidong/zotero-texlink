@@ -2,6 +2,8 @@
 
 ### 把公式截图变成可长期保存的 Zotero 笔记。
 
+[![最新版本](https://img.shields.io/github/v/release/yuweidong/zotero-texlink)](https://github.com/yuweidong/zotero-texlink/releases/latest) [![Zotero 中文社区 · 已收录](https://img.shields.io/badge/Zotero%20%E4%B8%AD%E6%96%87%E7%A4%BE%E5%8C%BA-%E5%B7%B2%E6%94%B6%E5%BD%95-blue)](https://zotero-chinese.com/plugins/) [![许可证：MIT](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-yellow.svg)](LICENSE)
+
 🌐 [English](README.md) · **简体中文**
 
 `✅ Zotero`  ·  `🔒 完全离线`  ·  `📝 笔记优先`  ·  `⚡ 一键完成`
@@ -44,6 +46,13 @@ TexLink 是一个专注的小型 Zotero 插件：把阅读时遇到的公式留�
 - ✍️ 可选备注
 - 🔎 可搜索的公式源码
 
+## 🆕 v1.0.0 新功能
+
+- **原位修正公式。** 从原截图重新识别并替换已有公式块，不会产生重复块，已有备注会保留。
+- **复制公式。** 可复制最近一次识别的 LaTeX、Markdown、行内或独立公式，也可复制当前笔记的全部公式。
+- **低置信度审核。** 可选开启低置信度标记与「复制待检查公式」命令。TexLink 不会自动改写公式，也不会改动已有笔记。
+- **稳定版发布。** 设置页、Tools 菜单、自动更新和可复现构建均纳入发布校验。
+
 ## 🎯 TexLink 的区别
 
 | | TexLink | 普通截图工具 |
@@ -81,6 +90,8 @@ TexLink 的界面语言跟随 Zotero 的全局语言设置。插件内部没有�
 - 截图越清晰，识别效果越好。
 - PDF 应当作为附件挂在正式文献条目下。
 - TexLink 保持本地处理，不会用猜测结果替换公式。
+
+如果 TexLink 帮到了你，点个 star 让更多人发现它。
 
 ## 📄 许可证
 

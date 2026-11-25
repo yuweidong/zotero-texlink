@@ -49,6 +49,10 @@ jobs:
           )
           if not entry:
               raise SystemExit(f"updates.json has no entry for {version}")
+          if not str(entry.get("update_hash", "")).startswith("sha256:"):
+              raise SystemExit(
+                  f"updates.json entry for {version} must include a sha256: update_hash"
+              )
           print(f"Release metadata checks passed for {version}")
           PY
 
@@ -73,8 +77,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Upload ONLY this tag's assets. A wildcard here used to re-upload
+          # every historical XPI from dist/ and overwrite older releases.
+          XPI="dist/zotero-texlink-${GITHUB_REF_NAME#v}.xpi"
+          CHECKSUM="${XPI}.sha256"
+          for asset in "$XPI" "$CHECKSUM"; do
+            if [ ! -f "$asset" ]; then
+              echo "Missing release asset: $asset" >&2
+              exit 1
+            fi
+          done
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/zotero-texlink-*.xpi dist/zotero-texlink-*.sha256 --clobber
+            gh release upload "$GITHUB_REF_NAME" "$XPI" "$CHECKSUM" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/zotero-texlink-*.xpi dist/zotero-texlink-*.sha256 --generate-notes
+            gh release create "$GITHUB_REF_NAME" "$XPI" "$CHECKSUM" --generate-notes
           fi

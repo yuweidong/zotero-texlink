@@ -24,7 +24,7 @@ texlink-pref-shortcut-hint = 使用英文逗号分隔；accel 在 macOS 表示 C
 texlink-pref-note-destination = 笔记写入位置
 texlink-pref-note-target = 公式块写入位置
 texlink-pref-note-target-auto = 自动：优先使用当前文献的笔记，否则使用专用笔记
-texlink-pref-note-target-active = 活动笔记：优先使用已打开的笔记，否则使用专用笔记
+texlink-pref-note-target-active = 活动笔记：仅写入该文献已打开的笔记；未打开则提示错误
 texlink-pref-note-target-dedicated = 专用笔记：始终使用专用笔记
 texlink-pref-log-tag = 专用笔记标签
 texlink-pref-log-tag-hint = 用于在多次提取之间找到同一笔记；请勿从笔记中删除该标签。
@@ -113,4 +113,44 @@ texlink-error-main-window = 无法获得 Zotero 主窗口用于图像预处理�
 texlink-error-decode-image = 无法解码注释图片。
 texlink-error-zero-image = 注释图片尺寸为 0。
 texlink-error-canvas = 无法创建 Canvas 2D 上下文。
+texlink-error-preferences-unavailable = 当前 Zotero 版本无法打开插件设置。
 texlink-error-worker-error = 推理线程错误：{ $message }
+
+# v1.0.0 - 审核、复制导出与原位替换
+texlink-pref-review = 审核与重复处理
+texlink-pref-review-hint = 标记低置信度公式以待检查
+texlink-pref-review-hint-hint = 仅对新写入的公式块生效；不会改动已有笔记，也不会自动改写公式。
+texlink-pref-confidence = 置信度阈值
+texlink-pref-duplicates = 同一截图重复识别时
+texlink-pref-duplicates-skip = 跳过：保留已有公式块
+texlink-pref-duplicates-replace = 替换：原位更新已有公式块
+
+texlink-menu-submenu = TexLink：复制 / 导出 / 审核
+texlink-menu-replace = TexLink：从原截图重新识别并替换此公式
+texlink-menu-replace-tools = TexLink：重新识别并替换选中的公式
+texlink-menu-copy-latex = 复制最近的 LaTeX
+texlink-menu-copy-markdown = 复制最近的公式为 Markdown
+texlink-menu-copy-inline = 复制最近的公式为行内公式
+texlink-menu-copy-all = 复制当前笔记中的全部公式（Markdown）
+texlink-menu-copy-review = 复制待检查的低置信度公式
+
+texlink-progress-replaced = 已原位更新 { $count } 条公式记录
+
+texlink-note-review-hint = ⚠ 待检查（置信度较低）
+texlink-note-label-confidence = 置信度
+
+texlink-error-no-active-note = 当前没有该文献的可编辑笔记打开。请先打开该文献的笔记，或修改公式写入位置设置。
+texlink-error-replace-stale = 笔记在更新过程中发生了变化，请重试。
+texlink-error-nothing-to-copy = 当前没有可复制的内容。
+texlink-error-no-last-result = 请先识别一个公式，然后即可复制。
+texlink-error-no-note = 请先打开一篇 Zotero 笔记，再使用复制或导出命令。
+texlink-error-no-formulas = 这篇笔记中还没有 TexLink 公式块。
+texlink-error-select-one = 请在 PDF 中仅选中一个公式截图进行替换。
+texlink-error-no-entry-to-replace = 该截图还没有 TexLink 公式块，请先用「识别选中的公式截图」写入笔记。
+
+texlink-status-copied = 已复制到剪贴板。
+texlink-status-copied-latex = LaTeX 已复制到剪贴板。
+texlink-status-copied-inline = 行内公式已复制到剪贴板。
+texlink-status-copied-all = 已复制 { $count } 条公式。
+texlink-status-copied-review = 已复制 { $count } 条待检查公式。
+texlink-status-no-review = 这篇笔记中没有低置信度公式。
