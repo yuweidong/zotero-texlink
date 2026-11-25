@@ -139,6 +139,53 @@
   </groupbox>
 
   <groupbox class="texlink-pref-card">
+    <label><html:h2 data-l10n-id="texlink-pref-review">Review and duplicates</html:h2></label>
+
+    <html:div class="texlink-pref-row">
+      <html:input
+        class="texlink-pref-checkbox"
+        type="checkbox"
+        id="texlink-pref-review-hint"
+      />
+      <html:label for="texlink-pref-review-hint" data-l10n-id="texlink-pref-review-hint">
+        Mark low-confidence formulas for review
+      </html:label>
+    </html:div>
+    <html:div class="texlink-pref-hint" data-l10n-id="texlink-pref-review-hint-hint">
+      Applies only to newly written blocks. Existing notes are never changed, and
+      formulas are never rewritten automatically.
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:label class="texlink-pref-label" for="texlink-pref-confidence" data-l10n-id="texlink-pref-confidence">
+        Confidence threshold
+      </html:label>
+      <html:input
+        class="texlink-pref-number"
+        type="number"
+        id="texlink-pref-confidence"
+        min="0"
+        max="1"
+        step="0.05"
+      />
+    </html:div>
+
+    <html:div class="texlink-pref-row">
+      <html:label class="texlink-pref-label" for="texlink-pref-duplicates" data-l10n-id="texlink-pref-duplicates">
+        Repeated recognition of the same screenshot
+      </html:label>
+      <html:select class="texlink-pref-select" id="texlink-pref-duplicates">
+        <html:option value="skip" data-l10n-id="texlink-pref-duplicates-skip">
+          Skip: keep the existing formula block
+        </html:option>
+        <html:option value="replace" data-l10n-id="texlink-pref-duplicates-replace">
+          Replace: update the existing block in place
+        </html:option>
+      </html:select>
+    </html:div>
+  </groupbox>
+
+  <groupbox class="texlink-pref-card">
     <label><html:h2 data-l10n-id="texlink-pref-note-destination">Note destination</html:h2></label>
 
     <html:div class="texlink-pref-row">
@@ -150,7 +197,7 @@
           Auto: current note for this item, otherwise the dedicated note
         </html:option>
         <html:option value="active" data-l10n-id="texlink-pref-note-target-active">
-          Active: prefer the open note, otherwise the dedicated note
+          Active: only the open note for this item; show an error if none is open
         </html:option>
         <html:option value="dedicated" data-l10n-id="texlink-pref-note-target-dedicated">
           Dedicated: always use the dedicated note

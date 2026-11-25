@@ -24,7 +24,7 @@ texlink-pref-shortcut-hint = Comma-separated. Use accel for Cmd on macOS and Ctr
 texlink-pref-note-destination = Note destination
 texlink-pref-note-target = Where to write formula blocks
 texlink-pref-note-target-auto = Auto: current note for this item, otherwise the dedicated note
-texlink-pref-note-target-active = Active: prefer the open note, otherwise the dedicated note
+texlink-pref-note-target-active = Active: only the open note for this item; show an error if none is open
 texlink-pref-note-target-dedicated = Dedicated: always use the dedicated note
 texlink-pref-log-tag = Dedicated note tag
 texlink-pref-log-tag-hint = Used to find the same note across multiple extractions. Avoid deleting this tag from the note.
@@ -113,4 +113,44 @@ texlink-error-main-window = Could not obtain the Zotero main window for image pr
 texlink-error-decode-image = Could not decode the annotation image.
 texlink-error-zero-image = Annotation image has zero dimensions.
 texlink-error-canvas = Could not create a Canvas 2D context.
+texlink-error-preferences-unavailable = This Zotero version cannot open plugin preferences.
 texlink-error-worker-error = Inference Worker error: { $message }
+
+# v1.0.0 - review, copy/export, and in-place replacement
+texlink-pref-review = Review and duplicates
+texlink-pref-review-hint = Mark low-confidence formulas for review
+texlink-pref-review-hint-hint = Applies only to newly written blocks. Existing notes are never changed, and formulas are never rewritten automatically.
+texlink-pref-confidence = Confidence threshold
+texlink-pref-duplicates = Repeated recognition of the same screenshot
+texlink-pref-duplicates-skip = Skip: keep the existing formula block
+texlink-pref-duplicates-replace = Replace: update the existing block in place
+
+texlink-menu-submenu = TexLink: Copy / Export / Review
+texlink-menu-replace = TexLink: Re-recognize and Replace This Formula
+texlink-menu-replace-tools = TexLink: Re-recognize and Replace Selected Formula
+texlink-menu-copy-latex = Copy last LaTeX
+texlink-menu-copy-markdown = Copy last formula as Markdown
+texlink-menu-copy-inline = Copy last formula as inline math
+texlink-menu-copy-all = Copy all formulas in current note (Markdown)
+texlink-menu-copy-review = Copy low-confidence formulas for review
+
+texlink-progress-replaced = Updated { $count } formula records in place
+
+texlink-note-review-hint = ⚠ Needs review (low confidence)
+texlink-note-label-confidence = Confidence
+
+texlink-error-no-active-note = No editable open note belongs to this item. Open the item's note first or change the note destination setting.
+texlink-error-replace-stale = The note changed while updating the formula. Please try again.
+texlink-error-nothing-to-copy = There is nothing to copy yet.
+texlink-error-no-last-result = Recognize a formula first; then you can copy it.
+texlink-error-no-note = Open a Zotero note first, then use the copy or export command.
+texlink-error-no-formulas = This note does not contain any TexLink formula blocks yet.
+texlink-error-select-one = Select exactly one formula screenshot in the PDF to replace.
+texlink-error-no-entry-to-replace = This screenshot has no TexLink formula block yet. Use Recognize Formula and Add to Note first.
+
+texlink-status-copied = Copied to clipboard.
+texlink-status-copied-latex = LaTeX copied to clipboard.
+texlink-status-copied-inline = Inline formula copied to clipboard.
+texlink-status-copied-all = Copied { $count } formulas to clipboard.
+texlink-status-copied-review = Copied { $count } formulas that need review.
+texlink-status-no-review = No low-confidence formulas in this note.

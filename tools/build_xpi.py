@@ -47,7 +47,9 @@ def main() -> None:
     subprocess.run([sys.executable, str(ROOT / "tools/verify_assets.py")], check=True)
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     version = manifest["version"]
-    DIST.mkdir(exist_ok=True)
+    # Check first: some sandboxed runtimes mishandle mkdir(exist_ok=True).
+    if not DIST.is_dir():
+        DIST.mkdir(parents=True, exist_ok=True)
     output = DIST / f"zotero-texlink-{version}.xpi"
 
     files: list[tuple[pathlib.Path, str]] = []
@@ -85,10 +87,9 @@ def main() -> None:
         "chrome/content/preferences/preferences.xhtml",
         "chrome/content/preferences/preferences.js",
         "chrome/content/preferences/preferences.css",
+        "chrome/content/icons/texlink-48.png",
         "locale/en-US/texlink.ftl",
         "locale/zh-CN/texlink.ftl",
-        "chrome/content/icons/texlink-prefs.svg",
-        "chrome/content/icons/texlink-prefs.png",
         "chrome/content/models/encoder_model_int8.onnx",
         "chrome/content/models/decoder_model_int8.onnx",
         "chrome/content/models/tokenizer.json",

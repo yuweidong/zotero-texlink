@@ -39,6 +39,7 @@ function texlinkError(message, error) {
   }
 }
 
+
 /**
  * Called when the extension is installed. No persistent registry entries are
  * needed. Note that install() runs in the profile and may happen before Zotero
@@ -129,6 +130,11 @@ async function startup({ id, version, rootURI }, reason) {
     chromeBase: context.chromeBase
   });
 
+  // All setup happens in one place, inside service.startup(). An earlier
+  // version also registered the settings pane here, before Zotero's plugin
+  // manager had finished activating the add-on; that raced with the real
+  // registration and left a half-initialized pane behind. Single entry point
+  // now: startup() owns both recognition wiring and the settings pane.
   try {
     await Zotero.TexLink.startup(reason);
   }

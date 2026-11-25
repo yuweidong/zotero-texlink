@@ -33,6 +33,24 @@ jobs:
       - name: Build XPI
         run: python3 tools/build_xpi.py
 
+      - name: Check reproducible XPI build
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
+          XPI="dist/zotero-texlink-${VERSION}.xpi"
+          digest() {
+            python3 -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$XPI"
+          }
+          first=$(digest)
+          python3 tools/build_xpi.py
+          second=$(digest)
+          if [ "$first" != "$second" ]; then
+            echo "XPI build is not reproducible: $first != $second" >&2
+            exit 1
+          fi
+          echo "Reproducible build verified: $second"
+
       - name: Re-verify built artifact
         run: python3 tools/verify_assets.py
 

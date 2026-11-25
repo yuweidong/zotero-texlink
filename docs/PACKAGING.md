@@ -41,9 +41,7 @@ zotero-texlink-<version>.xpi
         │       └── ort-wasm-simd.wasm
         └── icons/
             ├── texlink-48.png
-            ├── texlink-96.png
-            ├── texlink-prefs.svg
-            └── texlink-prefs.png
+            └── texlink-96.png
 ```
 
 Do **not** package `README.md`, `docs/`, `tools/`, `tests/`, or `.venv` into the
