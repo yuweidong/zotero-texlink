@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="chrome/content/icons/texlink-96.png" alt="TexLink" width="52" style="vertical-align:middle">
+  <img src="chrome/content/icons/texlink-96.png" alt="TexLink" width="52" align="absmiddle">
   TexLink
 </h1>
 
