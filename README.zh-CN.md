@@ -1,6 +1,7 @@
-# TexLink
-
-### 把公式截图变成可长期保存的 Zotero 笔记。
+<h1 align="center">
+  <img src="chrome/content/icons/texlink-96.png" alt="TexLink" width="52" style="vertical-align:middle">
+  TexLink
+</h1>
 
 [![最新版本](https://img.shields.io/github/v/release/yuweidong/zotero-texlink)](https://github.com/yuweidong/zotero-texlink/releases/latest) [![Zotero 中文社区 · 已收录](https://img.shields.io/badge/Zotero%20%E4%B8%AD%E6%96%87%E7%A4%BE%E5%8C%BA-%E5%B7%B2%E6%94%B6%E5%BD%95-blue)](https://zotero-chinese.com/plugins/) [![许可证：MIT](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-yellow.svg)](LICENSE)
 
