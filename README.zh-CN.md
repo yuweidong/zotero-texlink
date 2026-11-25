@@ -1,16 +1,19 @@
+<div align="center">
+
 <h1 align="center">
   <img src="chrome/content/icons/texlink-96.png" alt="TexLink" width="52" align="absmiddle">
   TexLink
 </h1>
 
-[![最新版本](https://img.shields.io/github/v/release/yuweidong/zotero-texlink)](https://github.com/yuweidong/zotero-texlink/releases/latest) [![Zotero 中文社区 · 已收录](https://img.shields.io/badge/Zotero%20%E4%B8%AD%E6%96%87%E7%A4%BE%E5%8C%BA-%E5%B7%B2%E6%94%B6%E5%BD%95-blue)](https://zotero-chinese.com/plugins/) [![许可证：MIT](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-yellow.svg)](LICENSE)
+[![最新版本](https://img.shields.io/github/v/release/yuweidong/zotero-texlink)](https://github.com/yuweidong/zotero-texlink/releases/latest) [![Zotero 中文社区 · 已收录](https://img.shields.io/badge/Zotero%20%E4%B8%AD%E6%96%87%E7%A4%BE%E5%8C%BA-%E5%B7%B2%E6%94%B6%E5%BD%95-red)](https://zotero-chinese.com/plugins/) [![许可证：MIT](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-yellow.svg)](LICENSE)
 
 🌐 [English](README.md) · **简体中文**
 
 `✅ Zotero`  ·  `🔒 完全离线`  ·  `📝 笔记优先`  ·  `⚡ 一键完成`
 
-TexLink 是一个专注的小型 Zotero 插件：把阅读时遇到的公式留在笔记里。
-在 PDF 中框选公式，运行 TexLink，公式块就会出现在文献笔记中，并同时保留页码、时间、来源和公式预览。
+TexLink 是一个专注的小型 Zotero 插件：把阅读时遇到的公式留在笔记里。在 PDF 中框选公式，运行 TexLink，公式块就会出现在文献笔记中，并同时保留页码、时间、来源和公式预览。
+
+</div>
 
 ---
 

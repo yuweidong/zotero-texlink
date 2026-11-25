@@ -1,17 +1,19 @@
+<div align="center">
+
 <h1 align="center">
   <img src="chrome/content/icons/texlink-96.png" alt="TexLink" width="52" align="absmiddle">
   TexLink
 </h1>
 
-[![Latest Release](https://img.shields.io/github/v/release/yuweidong/zotero-texlink)](https://github.com/yuweidong/zotero-texlink/releases/latest) [![Zotero 中文社区 · 已收录](https://img.shields.io/badge/Zotero%20%E4%B8%AD%E6%96%87%E7%A4%BE%E5%8C%BA-%E5%B7%B2%E6%94%B6%E5%BD%95-blue)](https://zotero-chinese.com/plugins/) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Latest Release](https://img.shields.io/github/v/release/yuweidong/zotero-texlink)](https://github.com/yuweidong/zotero-texlink/releases/latest) [![Zotero 中文社区 · 已收录](https://img.shields.io/badge/Zotero%20%E4%B8%AD%E6%96%87%E7%A4%BE%E5%8C%BA-%E5%B7%B2%E6%94%B6%E5%BD%95-red)](https://zotero-chinese.com/plugins/) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 🌐 **English** · [简体中文](README.zh-CN.md)
 
 `✅ Zotero`  ·  `🔒 Fully offline`  ·  `📝 Notes-first`  ·  `⚡ One click`
 
-TexLink is a small Zotero add-on for one job: keep the formulas you find while
-reading. Select a formula in a PDF, run TexLink, and get a clean formula block
-inside the literature note — with the page, time, source, and preview together.
+TexLink is a small Zotero add-on for one job: keep the formulas you find while reading. Select a formula in a PDF, run TexLink, and get a clean formula block inside the literature note — with the page, time, source, and preview together.
+
+</div>
 
 ---
 
